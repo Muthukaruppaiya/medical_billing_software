@@ -1,0 +1,188 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-surface-bg text-slate-800;
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-300 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-400;
+  }
+}
+
+@layer components {
+  /* ── Sidebar ── */
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer
+           text-sidebar-text text-sm font-medium transition-all duration-150;
+  }
+  .sidebar-item:hover {
+    @apply bg-sidebar-hover text-white;
+  }
+  .sidebar-item.active {
+    @apply bg-sidebar-active text-white shadow-md;
+  }
+
+  /* ── Cards ── */
+  .card {
+    @apply bg-surface-card rounded-xl shadow-card p-5 border border-surface-border;
+  }
+  .card:hover {
+    @apply shadow-card-hover transition-shadow duration-200;
+  }
+
+  /* ── Buttons ── */
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium
+           text-sm transition-all duration-150 cursor-pointer border-0;
+  }
+  .btn-primary {
+    @apply btn bg-primary-500 text-white hover:bg-primary-600 active:bg-primary-700;
+  }
+  .btn-secondary {
+    @apply btn bg-white text-slate-700 border border-surface-border hover:bg-slate-50;
+  }
+  .btn-success {
+    @apply btn bg-success text-white hover:bg-emerald-600;
+  }
+  .btn-danger {
+    @apply btn bg-danger text-white hover:bg-red-600;
+  }
+  .btn-warning {
+    @apply btn bg-warning text-white hover:bg-amber-600;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-slate-600 hover:bg-slate-100;
+  }
+  .btn-teal {
+    @apply btn bg-teal-500 text-white hover:bg-teal-600;
+  }
+  .btn-green {
+    @apply btn bg-emerald-500 text-white hover:bg-emerald-600;
+  }
+
+  /* ── Quick Action Buttons (Dashboard) ── */
+  .quick-btn {
+    @apply flex items-center justify-center gap-2 px-5 py-3 rounded-xl
+           font-semibold text-sm transition-all duration-150 cursor-pointer
+           shadow-sm hover:shadow-md hover:-translate-y-0.5;
+  }
+
+  /* ── Form Controls ── */
+  .form-input {
+    @apply w-full px-3 py-2 border border-surface-border rounded-lg text-sm
+           text-slate-700 bg-white placeholder-slate-400
+           focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400
+           transition-all duration-150;
+  }
+  .form-select {
+    @apply form-input appearance-none cursor-pointer;
+  }
+  .form-label {
+    @apply block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1;
+  }
+
+  /* ── Table ── */
+  .table-wrapper {
+    @apply overflow-x-auto rounded-xl border border-surface-border;
+  }
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+  .data-table thead tr {
+    @apply bg-slate-50 border-b border-surface-border;
+  }
+  .data-table thead th {
+    @apply px-4 py-3 text-left text-xs font-semibold text-slate-500
+           uppercase tracking-wide whitespace-nowrap;
+  }
+  .data-table tbody tr {
+    @apply border-b border-surface-border last:border-0 hover:bg-slate-50
+           transition-colors duration-100;
+  }
+  .data-table tbody td {
+    @apply px-4 py-3 text-slate-700;
+  }
+
+  /* ── Status Badges ── */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-success {
+    @apply badge bg-emerald-100 text-emerald-700;
+  }
+  .badge-danger {
+    @apply badge bg-red-100 text-red-700;
+  }
+  .badge-warning {
+    @apply badge bg-amber-100 text-amber-700;
+  }
+  .badge-info {
+    @apply badge bg-blue-100 text-blue-700;
+  }
+  .badge-gray {
+    @apply badge bg-slate-100 text-slate-600;
+  }
+
+  /* ── Page Header ── */
+  .page-header {
+    @apply flex items-center justify-between mb-6;
+  }
+  .page-title {
+    @apply text-xl font-bold text-slate-800;
+  }
+  .page-subtitle {
+    @apply text-sm text-slate-500 mt-0.5;
+  }
+
+  /* ── KPI Card ── */
+  .kpi-card {
+    @apply card flex items-center justify-between;
+  }
+
+  /* ── Qty Stepper ── */
+  .qty-stepper {
+    @apply flex items-center gap-0 border border-surface-border rounded-lg overflow-hidden;
+  }
+  .qty-stepper button {
+    @apply w-7 h-7 flex items-center justify-center bg-slate-50 text-slate-600
+           hover:bg-primary-50 hover:text-primary-600 transition-colors text-base font-bold
+           cursor-pointer border-0;
+  }
+  .qty-stepper input {
+    @apply w-10 h-7 text-center text-sm font-medium border-x border-surface-border
+           focus:outline-none text-slate-700 bg-white;
+  }
+
+  /* ── Invoice Print ── */
+  @media print {
+    .no-print { display: none !important; }
+    .print-only { display: block !important; }
+    body { background: white; }
+  }
+}
