@@ -71,7 +71,8 @@ export default function BulkImportModal({ onClose }) {
         batch: 'B123',
         grams: '500mg',
         mrp: 50,
-        rate: 35,
+        purchaseRate: 35,
+        saleRate: 42,
         stock: 100,
         minStock: 20,
         expiry: '2025-12-31',
@@ -132,9 +133,11 @@ export default function BulkImportModal({ onClose }) {
           setPreview(catalogItems);
           setError(null);
         } else {
-          const validItems = json.filter(item => item.name && item.mrp && item.rate);
+          const validItems = json.filter(item =>
+            item.name && item.mrp && (item.purchaseRate ?? item.rate) !== undefined
+          );
           if (validItems.length !== json.length) {
-            setError(`Found ${json.length - validItems.length} items missing required fields (name, mrp, rate). They will be ignored.`);
+            setError(`Found ${json.length - validItems.length} items missing required fields (name, mrp, purchaseRate). They will be ignored.`);
           }
           setImportMode('inventory');
           setPreview(validItems);
@@ -178,7 +181,18 @@ export default function BulkImportModal({ onClose }) {
             skipped,
           });
         }
-        alert(`Medicine catalog import complete.\n${imported} added · ${skipped} already existed or skipped`);
+        if (imported === 0 && skipped > 0) {
+          alert(
+            `All ${skipped.toLocaleString('en-IN')} medicines are already in your catalog.\n` +
+            `Nothing new to add.\n\n` +
+            `Search them in New Purchase (they stay hidden from Products until first purchase).`
+          );
+        } else {
+          alert(
+            `Medicine catalog import complete.\n` +
+            `${imported.toLocaleString('en-IN')} added · ${skipped.toLocaleString('en-IN')} already existed or skipped`
+          );
+        }
       } else {
         let imported = 0;
         for (const item of preview) {
@@ -194,7 +208,8 @@ export default function BulkImportModal({ onClose }) {
               grams: String(item.grams || ''),
               packType: String(item.packType || ''),
               mrp: Number(item.mrp || 0),
-              rate: Number(item.rate || 0),
+              purchaseRate: Number(item.purchaseRate ?? item.rate ?? 0),
+              rate: Number(item.saleRate ?? item.rate ?? item.mrp ?? 0),
               stock: Number(item.stock || 0),
               minStock: Number(item.minStock || 0),
               expiry: item.expiry || '',

@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import { useApp } from '../../context/AppContext';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { expiryDaysLeft, formatExpiry } from '../../utils/expiry';
 
 export default function Header() {
   const { state } = useApp();
@@ -31,8 +32,8 @@ export default function Header() {
   const lowStockList = state.products.filter(p => p.stock > 0 && p.stock <= (p.minStock || 5));
   const outStockList = state.products.filter(p => p.stock === 0);
   const expiringList = state.products.filter(p => {
-    const diff = dayjs(p.expiry).diff(dayjs(), 'day');
-    return diff <= 90 && diff > 0;
+    const diff = expiryDaysLeft(p.expiry);
+    return diff != null && diff <= 90 && diff > 0;
   });
   
   const notifCount = lowStockList.length + outStockList.length + expiringList.length;
@@ -114,7 +115,7 @@ export default function Header() {
               {expiringList.map(p => (
                 <div key={'exp_'+p.id} className="px-4 py-3 border-b border-surface-border hover:bg-slate-50 text-sm">
                   <div className="font-medium text-slate-800">{p.name}</div>
-                  <div className="text-amber-600 font-semibold text-xs mt-0.5">Expiring on {dayjs(p.expiry).format('DD MMM YYYY')}</div>
+                  <div className="text-amber-600 font-semibold text-xs mt-0.5">EXP {formatExpiry(p.expiry)}</div>
                 </div>
               ))}
             </div>

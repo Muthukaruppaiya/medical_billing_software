@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import {
   X, Save, Package, MapPin, FlaskConical, IndianRupee, Plus, Trash2,
 } from 'lucide-react';
+import ExpiryInput from '../ui/ExpiryInput';
+import { normalizeExpiry } from '../../utils/expiry';
 
 const CATEGORIES = ['Tablet', 'Capsule', 'Syrup', 'Liquid', 'Injection', 'Inhaler', 'Ointment', 'Others'];
 const PACK_TYPES = ['Strip', 'Bottle', 'Box', 'Vial', 'Tube', 'Sachet', 'Ampoule', 'Others'];
@@ -83,7 +85,7 @@ export default function ProductModal({ product, onSave, onClose }) {
 
       const normalizedBatches = batchRows.map(row => ({
         batch: row.batch.trim(),
-        expiry: row.expiry,
+        expiry: normalizeExpiry(row.expiry) || '',
         stock: Number(row.stock),
         mrp: Number(row.mrp),
         rate: Number(row.rate),
@@ -104,6 +106,7 @@ export default function ProductModal({ product, onSave, onClose }) {
     if (!form.rate) return alert('Purchase Rate is required');
     onSave({
       ...form,
+      expiry: normalizeExpiry(form.expiry) || '',
       mrp: Number(form.mrp),
       rate: Number(form.rate),
       cgst: Number(form.cgst),
@@ -183,9 +186,12 @@ export default function ProductModal({ product, onSave, onClose }) {
 
             {product && (
               <div>
-                <label className="form-label">Expiry Date</label>
-                <input type="date" value={form.expiry} onChange={e => set('expiry', e.target.value)}
-                       className="form-input" disabled={hasMultipleBatches} />
+                <label className="form-label">EXP (MM/YY)</label>
+                <ExpiryInput
+                  value={form.expiry}
+                  onChange={value => set('expiry', value)}
+                  disabled={hasMultipleBatches}
+                />
               </div>
             )}
           </Section>
@@ -257,11 +263,10 @@ export default function ProductModal({ product, onSave, onClose }) {
                       />
                     </div>
                     <div>
-                      <label className="form-label text-[11px]">Expiry</label>
-                      <input
-                        type="date"
+                      <label className="form-label text-[11px]">EXP (MM/YY)</label>
+                      <ExpiryInput
                         value={row.expiry}
-                        onChange={event => setBatch(index, 'expiry', event.target.value)}
+                        onChange={value => setBatch(index, 'expiry', value)}
                         className="form-input text-sm"
                       />
                     </div>

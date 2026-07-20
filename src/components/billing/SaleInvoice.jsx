@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { useInvoice, genInvoiceNo } from '../../hooks/useInvoice';
+import { useInvoice, nextDocumentNo } from '../../hooks/useInvoice';
 import ProductRow from './ProductRow';
 import InvoiceSummary from './InvoiceSummary';
 import PrintBillModal from './PrintBillModal';
@@ -8,10 +8,17 @@ import AddCustomerModal from '../customers/AddCustomerModal';
 import { Plus, Search, UserPlus } from 'lucide-react';
 import dayjs from 'dayjs';
 import clsx from 'clsx';
+import { isExpiryValid } from '../../utils/expiry';
 
 const isSellableBatch = batch =>
-  Number(batch.stock) > 0 &&
-  (!batch.expiry || !dayjs(batch.expiry).isBefore(dayjs(), 'day'));
+  Number(batch.stock) > 0 && isExpiryValid(batch.expiry);
+
+function saleNumberPreview() {
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(-2);
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  return `SL${yy}${mm}…`;
+}
 
 export default function SaleInvoice({ onSaved }) {
   const { state, dispatch } = useApp();
@@ -40,7 +47,7 @@ export default function SaleInvoice({ onSaved }) {
   // Print Bill popup state
   const [savedInvoice, setSavedInvoice] = useState(null);
 
-  const invoiceNo = useRef(genInvoiceNo('INV'));
+  const [invoiceNo, setInvoiceNo] = useState(saleNumberPreview);
   const totals    = useInvoice(cart);
 
   // ── Customer search ───────────────────────────────────────────────────────
@@ -150,25 +157,27 @@ export default function SaleInvoice({ onSaved }) {
       : discountVal;
     const finalAmount = Math.max(0, totals.subtotal - discountAmt);
 
-    const invoice = {
-      id:       invoiceNo.current,
-      date:     dayjs().format('DD-MM-YYYY'),
-      createdAt: Date.now(),
-      customer: customer?.name || 'Walk-in Customer',
-      customerId: customer?.id || null,
-      amount:   finalAmount,
-      tax:      totals.totalTax,
-      status:   'Paid',
-      type:     'sale',
-      items:    totals.rows,
-      gstin:    gstin || customer?.gstin || '',
-      discount: discountAmt,
-      patient: patient.trim(),
-      doctor: doctor.trim(),
-      customerAddress: customerAddress.trim(),
-    };
-
     try {
+      const billId = await nextDocumentNo('sale');
+      setInvoiceNo(billId);
+      const invoice = {
+        id:       billId,
+        date:     dayjs().format('DD-MM-YYYY'),
+        createdAt: Date.now(),
+        customer: customer?.name || 'Walk-in Customer',
+        customerId: customer?.id || null,
+        amount:   finalAmount,
+        tax:      totals.totalTax,
+        status:   'Paid',
+        type:     'sale',
+        items:    totals.rows,
+        gstin:    gstin || customer?.gstin || '',
+        discount: discountAmt,
+        patient: patient.trim(),
+        doctor: doctor.trim(),
+        customerAddress: customerAddress.trim(),
+      };
+
       const saved = await dispatch({ type: 'ADD_INVOICE', payload: invoice });
       setSavedInvoice(saved);
       if (onSaved) onSaved(saved);
@@ -189,7 +198,7 @@ export default function SaleInvoice({ onSaved }) {
     setCustomerAddress('');
     setDiscount(0);
     setDiscountType('%');
-    invoiceNo.current = genInvoiceNo('INV');
+    setInvoiceNo(saleNumberPreview());
   };
 
   return (
@@ -198,7 +207,7 @@ export default function SaleInvoice({ onSaved }) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="page-title">New Invoice</h1>
-          <p className="text-xs text-slate-400">Bill No: {invoiceNo.current} &nbsp;·&nbsp; {dayjs().format('DD-MM-YYYY')}</p>
+          <p className="text-xs text-slate-400">Bill No: {invoiceNo} &nbsp;·&nbsp; {dayjs().format('DD-MM-YYYY')}</p>
         </div>
       </div>
 

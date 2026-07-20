@@ -1,11 +1,11 @@
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import dayjs from 'dayjs';
 import KPICards      from '../components/dashboard/KPICards';
 import SalesChart    from '../components/dashboard/SalesChart';
 import CategoryDonut from '../components/dashboard/CategoryDonut';
 import RecentTable   from '../components/dashboard/RecentTable';
 import { Plus, ShoppingCart, PackagePlus, BarChart2, AlertTriangle } from 'lucide-react';
+import { expiryDaysLeft, formatExpiry } from '../utils/expiry';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -18,15 +18,15 @@ export default function Dashboard() {
       .map(batch => ({
         ...batch,
         name: product.name,
-        daysLeft: dayjs(batch.expiry).diff(dayjs(), 'day'),
+        daysLeft: expiryDaysLeft(batch.expiry),
       }))
-      .filter(batch => batch.expiry && batch.stock > 0 && batch.daysLeft <= 90 && batch.daysLeft > 0)
+      .filter(batch => batch.expiry && batch.stock > 0 && batch.daysLeft != null && batch.daysLeft <= 90 && batch.daysLeft > 0)
   );
 
   const alerts = [
     ...outStockList.map(p => `🚨 ${p.name} is OUT OF STOCK`),
     ...lowStockList.map(p => `⚠️ ${p.name} is Low Stock (${p.stock} left)`),
-    ...expiringList.map(p => `⏳ ${p.name} batch ${p.batch} expires on ${dayjs(p.expiry).format('DD MMM')}`)
+    ...expiringList.map(p => `⏳ ${p.name} batch ${p.batch} EXP ${formatExpiry(p.expiry)}`)
   ];
 
   return (

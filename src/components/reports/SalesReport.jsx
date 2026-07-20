@@ -10,7 +10,7 @@ import CustomerHistoryModal from './CustomerHistoryModal';
 const isConsolidatedInvoice = inv =>
   inv.id?.startsWith('SLS-') || inv.customer === 'Bulk Small Sales Summary';
 
-const EXPORT_HEADERS = [
+const BASE_EXPORT_HEADERS = [
   'S.No.',
   'Date',
   'Doctor Name',
@@ -21,17 +21,45 @@ const EXPORT_HEADERS = [
   'Quantity',
 ];
 
-function buildExportRows(invoices) {
+const STANDARD_EXPORT_HEADERS = [
+  'S.No.',
+  'Bill No',
+  'Date',
+  'Doctor Name',
+  'Patient Name',
+  'Customer Address',
+  'Product Name',
+  'Manufacturer Name',
+  'Batch Name',
+  'Expiry Date',
+  'Quantity',
+  'Signature',
+];
+
+// Invoice-level columns are merged across product rows in Excel/PDF.
+const getInvoiceLevelHeaders = headers =>
+  headers.filter(header =>
+    ['S.No.', 'Bill No', 'Date', 'Doctor Name', 'Patient Name', 'Customer Address'].includes(header)
+  );
+
+function buildExportRows(invoices, { standard = false, customers = [] } = {}) {
   const rows = [];
 
   invoices.forEach((inv, invoiceIndex) => {
     const items = Array.isArray(inv.items) && inv.items.length
       ? inv.items
-      : [{ product: { name: '—' }, qty: 0, batch: '', expiry: '' }];
+      : [{ product: { name: '—' }, qty: 0, batch: '', expiry: '', manufacturer: '' }];
+
+    const matchedCustomer = customers.find(
+      customer =>
+        (inv.customerId && Number(customer.id) === Number(inv.customerId)) ||
+        (!inv.customerId && customer.name === inv.customer)
+    );
+    const customerAddress = inv.customerAddress || matchedCustomer?.address || '';
 
     items.forEach((item, itemIndex) => {
       const firstProduct = itemIndex === 0;
-      rows.push({
+      const row = {
         'S.No.': firstProduct ? invoiceIndex + 1 : '',
         Date: firstProduct ? inv.date || '' : '',
         'Doctor Name': firstProduct ? inv.doctor || '' : '',
@@ -43,7 +71,17 @@ function buildExportRows(invoices) {
         _firstProduct: firstProduct,
         _rowSpan: items.length,
         _invoiceIndex: invoiceIndex,
-      });
+      };
+
+      if (standard) {
+        row['Bill No'] = firstProduct ? inv.id || '' : '';
+        row['Customer Address'] = firstProduct ? customerAddress : '';
+        row['Manufacturer Name'] = item.product?.manufacturer || item.manufacturer || '';
+        // Signature blank on every product row for handwritten sign-off.
+        row.Signature = '';
+      }
+
+      rows.push(row);
     });
   });
 
@@ -107,9 +145,16 @@ export default function SalesReport() {
       });
   }, [state.invoices, fromDate, toDate, saleType]);
 
+  const exportHeaders = saleType === 'standard' ? STANDARD_EXPORT_HEADERS : BASE_EXPORT_HEADERS;
+  const invoiceLevelHeaders = getInvoiceLevelHeaders(exportHeaders);
+  const invoiceLevelCount = invoiceLevelHeaders.length;
+
   const exportRows = useMemo(
-    () => buildExportRows(filteredInvoices),
-    [filteredInvoices]
+    () => buildExportRows(filteredInvoices, {
+      standard: saleType === 'standard',
+      customers: state.customers,
+    }),
+    [filteredInvoices, saleType, state.customers]
   );
 
   const totalSales = filteredInvoices.reduce((s, i) => s + Number(i.amount || 0), 0);
@@ -183,29 +228,26 @@ export default function SalesReport() {
     }
 
     const worksheetRows = exportRows.map(row =>
-      Object.fromEntries(EXPORT_HEADERS.map(header => [header, row[header]]))
+      Object.fromEntries(exportHeaders.map(header => [header, row[header]]))
     );
-    const worksheet = XLSX.utils.json_to_sheet(worksheetRows, { header: EXPORT_HEADERS });
-    worksheet['!cols'] = [
-      { wch: 8 },
-      { wch: 12 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 28 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 10 },
-    ];
+    const worksheet = XLSX.utils.json_to_sheet(worksheetRows, { header: exportHeaders });
+    worksheet['!cols'] = exportHeaders.map(header => {
+      if (header === 'Customer Address') return { wch: 28 };
+      if (header === 'Product Name' || header === 'Manufacturer Name') return { wch: 24 };
+      if (header === 'Signature') return { wch: 16 };
+      if (header === 'Bill No') return { wch: 18 };
+      return { wch: 12 };
+    });
     worksheet['!merges'] = exportRows.flatMap((row, rowIndex) => {
       if (!row._firstProduct || row._rowSpan <= 1) return [];
       // Row 0 contains headers; data starts at row 1.
-      return [0, 1, 2, 3].map(column => ({
+      return Array.from({ length: invoiceLevelCount }, (_, column) => ({
         s: { r: rowIndex + 1, c: column },
         e: { r: rowIndex + row._rowSpan, c: column },
       }));
     });
 
-    // Blank rows + signature block at the bottom
+    // Blank rows + signature block at the bottom (overall authorization)
     const start = exportRows.length + 3;
     XLSX.utils.sheet_add_aoa(
       worksheet,
@@ -262,7 +304,7 @@ export default function SalesReport() {
           <table className="w-full border-collapse text-xs">
             <thead>
               <tr className="bg-slate-800 text-white">
-                {EXPORT_HEADERS.map(header => (
+                {exportHeaders.map(header => (
                   <th key={header} className="border border-slate-300 p-2 text-left font-semibold">
                     {header}
                   </th>
@@ -274,20 +316,25 @@ export default function SalesReport() {
                 <tr key={index} className={row._invoiceIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
                   {row._firstProduct && (
                     <>
-                      {EXPORT_HEADERS.slice(0, 4).map(header => (
+                      {exportHeaders.slice(0, invoiceLevelCount).map(header => (
                         <td
                           key={header}
                           rowSpan={row._rowSpan}
-                          className="border border-slate-200 p-2 align-top"
+                          className="border border-slate-200 p-2 align-top whitespace-pre-line"
                         >
                           {row[header]}
                         </td>
                       ))}
                     </>
                   )}
-                  {EXPORT_HEADERS.slice(4).map(header => (
-                    <td key={header} className="border border-slate-200 p-2">
-                      {row[header]}
+                  {exportHeaders.slice(invoiceLevelCount).map(header => (
+                    <td
+                      key={header}
+                      className={`border border-slate-200 p-2 ${
+                        header === 'Signature' ? 'min-w-[90px] h-10' : ''
+                      }`}
+                    >
+                      {header === 'Signature' ? '' : row[header]}
                     </td>
                   ))}
                 </tr>
@@ -438,6 +485,7 @@ export default function SalesReport() {
                 <th>Invoice #</th>
                 <th>Date</th>
                 <th>Customer</th>
+                {saleType === 'standard' && <th>Customer Address</th>}
                 <th>Tax / GST</th>
                 <th>Total Amount</th>
                 <th>Status</th>
@@ -446,9 +494,20 @@ export default function SalesReport() {
             </thead>
             <tbody>
               {filteredInvoices.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-12 text-slate-400">No sales invoices found for the selected date range.</td></tr>
+                <tr>
+                  <td colSpan={saleType === 'standard' ? 8 : 7} className="text-center py-12 text-slate-400">
+                    No sales invoices found for the selected date range.
+                  </td>
+                </tr>
               ) : (
-                filteredInvoices.map(inv => (
+                filteredInvoices.map(inv => {
+                  const matchedCustomer = state.customers.find(
+                    customer =>
+                      (inv.customerId && Number(customer.id) === Number(inv.customerId)) ||
+                      (!inv.customerId && customer.name === inv.customer)
+                  );
+                  const address = inv.customerAddress || matchedCustomer?.address || '—';
+                  return (
                   <tr key={inv.id}>
                     <td
                       className="font-medium text-primary-600 cursor-pointer hover:underline"
@@ -467,6 +526,11 @@ export default function SalesReport() {
                         {inv.customer}
                       </button>
                     </td>
+                    {saleType === 'standard' && (
+                      <td className="text-xs text-slate-500 max-w-[220px] whitespace-pre-line">
+                        {address}
+                      </td>
+                    )}
                     <td className={`font-semibold ${Number(inv.tax) > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>
                       {Number(inv.tax) > 0 ? `₹${Number(inv.tax).toFixed(2)}` : 'None'}
                     </td>
@@ -488,7 +552,8 @@ export default function SalesReport() {
                       </button>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

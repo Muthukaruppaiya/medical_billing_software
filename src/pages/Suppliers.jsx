@@ -18,7 +18,9 @@ export default function Suppliers() {
       !normalizedQuery ||
       supplier.name.toLowerCase().includes(normalizedQuery) ||
       (supplier.phone || '').includes(normalizedQuery) ||
-      (supplier.gstin || '').toLowerCase().includes(normalizedQuery)
+      (supplier.gstin || '').toLowerCase().includes(normalizedQuery) ||
+      (supplier.pan || '').toLowerCase().includes(normalizedQuery) ||
+      (supplier.address || '').toLowerCase().includes(normalizedQuery)
     );
   }, [state.suppliers, query]);
 
@@ -95,7 +97,7 @@ export default function Suppliers() {
           type="text"
           value={query}
           onChange={event => setQuery(event.target.value)}
-          placeholder="Search by name, phone, or GSTIN..."
+          placeholder="Search by name, phone, GSTIN, PAN..."
           className="form-input pl-9"
         />
       </div>
@@ -155,8 +157,11 @@ export default function Suppliers() {
                 <div className="space-y-2 mt-4 text-sm text-slate-600">
                   <div className="flex items-center gap-2">
                     <Phone className="w-3.5 h-3.5 text-slate-400" />
-                    <span>{supplier.phone || 'No phone provided'}</span>
+                    <span>{supplier.phone || 'No phone'}</span>
                   </div>
+                  {supplier.pan && (
+                    <p className="text-xs text-slate-500 font-mono">PAN: {supplier.pan}</p>
+                  )}
                   {supplier.address && (
                     <div className="flex items-start gap-2">
                       <MapPin className="w-3.5 h-3.5 text-slate-400 mt-0.5 flex-shrink-0" />

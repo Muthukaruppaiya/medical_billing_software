@@ -5,6 +5,7 @@ import clsx from 'clsx';
 import { AlertTriangle, Download, Search, PackageX, IndianRupee } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useReactToPrint } from 'react-to-print';
+import { expiryDaysLeft, formatExpiry } from '../../utils/expiry';
 
 const money = value =>
   Number(value || 0).toLocaleString('en-IN', {
@@ -27,20 +28,22 @@ export default function ExpiryReport() {
   const [showZeroStock, setShowZeroStock] = useState(false);
   const printRef = useRef(null);
 
-  const today = dayjs();
   const allBatches = useMemo(
     () => state.products
-      .flatMap(product => (product.batches || []).map(batch => ({
-        ...product,
-        batchId: batch.id,
-        batch: batch.batch,
-        expiry: batch.expiry,
-        stock: Number(batch.stock || 0),
-        rate: Number(batch.rate || 0),
-        mrp: Number(batch.mrp || 0),
-        daysLeft: dayjs(batch.expiry).diff(today, 'day'),
-      })))
-      .filter(product => product.expiry && dayjs(product.expiry).isValid()),
+      .flatMap(product => (product.batches || []).map(batch => {
+        const daysLeft = expiryDaysLeft(batch.expiry);
+        return {
+          ...product,
+          batchId: batch.id,
+          batch: batch.batch,
+          expiry: batch.expiry,
+          stock: Number(batch.stock || 0),
+          rate: Number(batch.rate || 0),
+          mrp: Number(batch.mrp || 0),
+          daysLeft: daysLeft == null ? 9999 : daysLeft,
+        };
+      }))
+      .filter(product => product.expiry && expiryDaysLeft(product.expiry) != null),
     [state.products]
   );
 
@@ -103,7 +106,7 @@ export default function ExpiryReport() {
       'Purchase Rate': product.rate,
       MRP: product.mrp,
       'Stock Value': Number((product.stock * product.rate).toFixed(2)),
-      'Expiry Date': product.expiry,
+      'EXP (MM/YY)': formatExpiry(product.expiry),
       'Days Left': product.daysLeft,
       Status: getStatus(product.daysLeft),
     }));
@@ -270,7 +273,7 @@ export default function ExpiryReport() {
                 <th>Stock</th>
                 <th>Rate</th>
                 <th>Stock Value</th>
-                <th>Expiry Date</th>
+                <th>EXP (MM/YY)</th>
                 <th>Days Left</th>
                 <th>Status</th>
               </tr>
@@ -298,7 +301,7 @@ export default function ExpiryReport() {
                       </span>
                     </td>
                     <td className={clsx('font-medium', p.daysLeft < 0 ? 'text-danger' : p.daysLeft <= 30 ? 'text-warning' : 'text-slate-700')}>
-                      {p.expiry}
+                      {formatExpiry(p.expiry)}
                     </td>
                     <td>
                       {p.daysLeft < 0

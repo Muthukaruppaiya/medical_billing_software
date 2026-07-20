@@ -12,6 +12,11 @@ const db = new sqlite3.Database(dbPath, (err) => {
     console.error('Failed to connect to SQLite database:', err.message);
   } else {
     console.log('Connected to SQLite database at:', dbPath);
+    // Prevent "database is locked" freezes when UI + backup hit SQLite together.
+    db.configure('busyTimeout', 15000);
+    db.run('PRAGMA journal_mode = WAL');
+    db.run('PRAGMA synchronous = NORMAL');
+    db.run('PRAGMA foreign_keys = ON');
   }
 });
 
@@ -65,6 +70,7 @@ export async function initDb() {
       packType TEXT,
       boxNo TEXT,
       rackLocation TEXT,
+      purchaseRate REAL DEFAULT 0,
       isCatalog INTEGER NOT NULL DEFAULT 0,
       catalogKey TEXT
     )
@@ -79,6 +85,7 @@ export async function initDb() {
       stock INTEGER NOT NULL DEFAULT 0,
       mrp REAL,
       rate REAL,
+      purchaseRate REAL DEFAULT 0,
       cgst REAL,
       sgst REAL,
       FOREIGN KEY (productId) REFERENCES products(id) ON DELETE CASCADE,
@@ -93,14 +100,18 @@ export async function initDb() {
     "ALTER TABLE products ADD COLUMN boxNo TEXT",
     "ALTER TABLE products ADD COLUMN rackLocation TEXT",
     "ALTER TABLE products ADD COLUMN consolidatedSaleEnabled INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE products ADD COLUMN purchaseRate REAL DEFAULT 0",
     "ALTER TABLE products ADD COLUMN isCatalog INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE products ADD COLUMN catalogKey TEXT"
+    "ALTER TABLE products ADD COLUMN catalogKey TEXT",
+    "ALTER TABLE product_batches ADD COLUMN purchaseRate REAL DEFAULT 0"
   ];
   for (const sql of newCols) {
     try { await dbRun(sql); } catch (e) { /* column already exists */ }
   }
   await dbRun('CREATE INDEX IF NOT EXISTS idx_products_name_nocase ON products(name COLLATE NOCASE)');
   await dbRun('CREATE UNIQUE INDEX IF NOT EXISTS idx_products_catalog_key ON products(catalogKey) WHERE catalogKey IS NOT NULL');
+  await dbRun('UPDATE products SET purchaseRate = COALESCE(NULLIF(purchaseRate, 0), rate, 0)');
+  await dbRun('UPDATE product_batches SET purchaseRate = COALESCE(NULLIF(purchaseRate, 0), rate, 0)');
 
   // Backward-compatible one-time migration: every existing product becomes
   // the first batch for that product. Later purchases can add more batches.
@@ -117,6 +128,15 @@ export async function initDb() {
       cgst,
       sgst
     FROM products
+    WHERE COALESCE(isCatalog, 0) = 0
+  `);
+  await dbRun(`
+    DELETE FROM product_batches
+    WHERE productId IN (
+      SELECT id FROM products WHERE COALESCE(isCatalog, 0) = 1
+    )
+      AND stock = 0
+      AND batch LIKE 'DEFAULT-%'
   `);
 
   await dbRun(`
@@ -137,6 +157,21 @@ export async function initDb() {
       phone TEXT,
       gstin TEXT,
       address TEXT
+    )
+  `);
+
+  try {
+    await dbRun('ALTER TABLE suppliers ADD COLUMN pan TEXT');
+  } catch (e) {
+    // Column already exists
+  }
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS document_sequences (
+      prefix TEXT NOT NULL,
+      yymm TEXT NOT NULL,
+      lastNo INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (prefix, yymm)
     )
   `);
 
@@ -204,6 +239,40 @@ export async function initDb() {
       items TEXT
     )
   `);
+
+  const purchaseCols = [
+    'ALTER TABLE purchase_invoices ADD COLUMN documentName TEXT',
+    'ALTER TABLE purchase_invoices ADD COLUMN documentMime TEXT',
+    'ALTER TABLE purchase_invoices ADD COLUMN documentPath TEXT',
+  ];
+  for (const sql of purchaseCols) {
+    try { await dbRun(sql); } catch (e) { /* column already exists */ }
+  }
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS inventory_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      productId INTEGER NOT NULL,
+      batchId INTEGER NOT NULL,
+      adjustmentType TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      stockBefore REAL NOT NULL,
+      stockAfter REAL NOT NULL,
+      purchaseRateBefore REAL,
+      purchaseRateAfter REAL,
+      saleRateBefore REAL,
+      saleRateAfter REAL,
+      mrpBefore REAL,
+      mrpAfter REAL,
+      reason TEXT,
+      createdAt INTEGER NOT NULL,
+      FOREIGN KEY (productId) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (batchId) REFERENCES product_batches(id) ON DELETE CASCADE
+    )
+  `);
+  await dbRun(
+    'CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_product ON inventory_adjustments(productId, createdAt DESC)'
+  );
 
   try {
     await dbRun('ALTER TABLE purchase_invoices ADD COLUMN items TEXT');

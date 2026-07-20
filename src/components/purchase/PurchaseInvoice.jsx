@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { useInvoice, genInvoiceNo } from '../../hooks/useInvoice';
+import { useInvoice, nextDocumentNo } from '../../hooks/useInvoice';
 import PurchaseRow from './PurchaseRow';
 import InvoiceSummary from '../billing/InvoiceSummary';
 import { Search } from 'lucide-react';
@@ -17,7 +17,12 @@ export default function PurchaseInvoice({ onSaved }) {
   const [searchingProducts, setSearchingProducts] = useState(false);
   const [cart, setCart]             = useState([]);
   const [gstin, setGstin]           = useState('');
-  const invoiceNo = useRef(genInvoiceNo('PUR'));
+  const [invoiceNo, setInvoiceNo]   = useState(() => {
+    const now = new Date();
+    const yy = String(now.getFullYear()).slice(-2);
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    return `PO${yy}${mm}…`;
+  });
 
   const totals = useInvoice(cart);
 
@@ -60,7 +65,8 @@ export default function PurchaseInvoice({ onSaved }) {
     setCart(prev => [...prev, {
       product,
       qty:    1,
-      rate:   product.rate,
+      rate:   product.purchaseRate ?? product.rate ?? 0,
+      saleRate: product.rate ?? 0,
       mrp:    product.mrp,
       cgst:   product.cgst,
       sgst:   product.sgst,
@@ -80,23 +86,28 @@ export default function PurchaseInvoice({ onSaved }) {
     const missingBatch = cart.find(item => !item.batch?.trim());
     if (missingBatch) return alert(`Enter a batch number for ${missingBatch.product.name}`);
 
-    const purchase = {
-      id:       invoiceNo.current,
-      date:     dayjs().format('DD-MM-YYYY'),
-      supplier: supplier.name,
-      supplierId: supplier.id,
-      amount:   totals.grandTotal,
-      status:   'Received',
-      items:    totals.rows,
-    };
     try {
+      const poId = await nextDocumentNo('purchase');
+      setInvoiceNo(poId);
+      const purchase = {
+        id:       poId,
+        date:     dayjs().format('DD-MM-YYYY'),
+        supplier: supplier.name,
+        supplierId: supplier.id,
+        amount:   totals.grandTotal,
+        status:   'Received',
+        items:    totals.rows,
+      };
       const savedPurchase = await dispatch({ type: 'ADD_PURCHASE', payload: purchase });
       if (onSaved) onSaved(savedPurchase);
       else {
-        alert(`Purchase ${invoiceNo.current} saved!`);
+        alert(`Purchase ${poId} saved!`);
         setCart([]);
         setSupplier(null);
-        invoiceNo.current = genInvoiceNo('PUR');
+        const now = new Date();
+        const yy = String(now.getFullYear()).slice(-2);
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        setInvoiceNo(`PO${yy}${mm}…`);
       }
     } catch (error) {
       alert(error.message || 'Failed to save purchase');
@@ -108,7 +119,7 @@ export default function PurchaseInvoice({ onSaved }) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="page-title">New Purchase</h1>
-          <p className="text-xs text-slate-400">PO # {invoiceNo.current} &nbsp;·&nbsp; {dayjs().format('DD-MM-YYYY')}</p>
+          <p className="text-xs text-slate-400">PO # {invoiceNo} &nbsp;·&nbsp; {dayjs().format('DD-MM-YYYY')}</p>
         </div>
       </div>
 
@@ -230,9 +241,10 @@ export default function PurchaseInvoice({ onSaved }) {
                 <th>Product Name</th>
                 <th>HSN</th>
                 <th>Batch</th>
-                <th>Expiry</th>
+                <th>EXP</th>
                 <th>Quantity</th>
                 <th>Purchase Rate</th>
+                <th>Sale Rate</th>
                 <th>MRP</th>
                 <th>Tax</th>
                 <th>Total</th>
@@ -242,7 +254,7 @@ export default function PurchaseInvoice({ onSaved }) {
             <tbody>
               {cart.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-12 text-slate-400">
+                  <td colSpan={11} className="text-center py-12 text-slate-400">
                     Search and add products above to begin purchase entry
                   </td>
                 </tr>

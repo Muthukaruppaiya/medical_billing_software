@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import SaleInvoice from '../components/billing/SaleInvoice';
 import { ShoppingCart, Save, Coffee, Search, Trash2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { genInvoiceNo } from '../hooks/useInvoice';
+import { nextDocumentNo } from '../hooks/useInvoice';
 import dayjs from 'dayjs';
+import { formatExpiry, isExpiryValid } from '../utils/expiry';
 
 const isSellableBatch = batch =>
-  Number(batch.stock) > 0 &&
-  (!batch.expiry || !dayjs(batch.expiry).isBefore(dayjs(), 'day'));
+  Number(batch.stock) > 0 && isExpiryValid(batch.expiry);
 
 const buildBulkRow = (product, existing) => {
   const firstBatch = (product.batches || []).find(isSellableBatch);
@@ -163,7 +163,7 @@ export default function NewSale() {
 
     setSaving(true);
     try {
-      const invNo = genInvoiceNo('SLS');
+      const invNo = await nextDocumentNo('sale');
       const invoice = {
         id: invNo,
         date: dayjs(bulkDate).format('DD-MM-YYYY'),
@@ -348,7 +348,7 @@ export default function NewSale() {
                                 .filter(isSellableBatch)
                                 .map(batch => (
                                   <option key={batch.id} value={batch.id}>
-                                    {batch.batch} · Exp {batch.expiry || 'N/A'} · Stock {batch.stock}
+                                    {batch.batch} · EXP {formatExpiry(batch.expiry)} · Stock {batch.stock}
                                   </option>
                                 ))}
                             </select>

@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { initDb, dbAll, dbRun, dbGet } from './db.js';
 import { startBackupJob, performBackup } from './backup.js';
@@ -11,12 +12,75 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, '..', 'dist');
+const uploadRoot = process.env.UPLOAD_DIR
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : path.join(__dirname, 'uploads');
+const purchaseDocDir = path.join(uploadRoot, 'purchase-docs');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '40mb' }));
+
+/** Normalize pharmacy expiry to MM/YY. */
+function normalizeExpiry(value) {
+  if (value == null || value === '') return '';
+  const text = String(value).trim();
+  let match = text.match(/^(0[1-9]|1[0-2])[\/\-](\d{2})$/);
+  if (match) return `${match[1]}/${match[2]}`;
+  match = text.match(/^(0[1-9]|1[0-2])[\/\-](\d{4})$/);
+  if (match) return `${match[1]}/${match[2].slice(-2)}`;
+  match = text.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+  if (match && Number(match[2]) >= 1 && Number(match[2]) <= 12) {
+    return `${match[2]}/${match[1].slice(-2)}`;
+  }
+  match = text.match(/(0[1-9]|1[0-2])\D?(\d{2,4})/);
+  if (match) return `${match[1]}/${match[2].slice(-2)}`;
+  return text.slice(0, 7);
+}
+
+/** True if expiry month is still valid (end of month >= today). */
+function isExpiryValid(value, asOf = new Date()) {
+  const norm = normalizeExpiry(value);
+  if (!norm) return true;
+  const m = norm.match(/^(0[1-9]|1[0-2])\/(\d{2})$/);
+  if (!m) {
+    // Legacy YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) {
+      return String(value) >= asOf.toISOString().slice(0, 10);
+    }
+    return true;
+  }
+  const end = new Date(2000 + Number(m[2]), Number(m[1]), 0, 23, 59, 59, 999);
+  return end >= asOf;
+}
+
+function ensurePurchaseDocDir() {
+  fs.mkdirSync(purchaseDocDir, { recursive: true });
+}
+
+function savePurchaseDocument(purchaseId, document) {
+  if (!document?.dataBase64) return null;
+  ensurePurchaseDocDir();
+  const safeId = String(purchaseId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const originalName = String(document.name || 'purchase-document').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
+  const mime = String(document.mime || 'application/octet-stream');
+  const ext = path.extname(originalName)
+    || (mime.includes('pdf') ? '.pdf'
+      : mime.includes('png') ? '.png'
+        : mime.includes('webp') ? '.webp'
+          : '.jpg');
+  const fileName = `${safeId}_${Date.now()}${ext}`;
+  const filePath = path.join(purchaseDocDir, fileName);
+  const base64 = String(document.dataBase64).replace(/^data:[^;]+;base64,/, '');
+  fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+  return {
+    documentName: originalName,
+    documentMime: mime,
+    documentPath: filePath,
+  };
+}
 
 async function syncProductStock(productId) {
   const total = await dbGet(
@@ -24,7 +88,7 @@ async function syncProductStock(productId) {
     [productId]
   );
   const primaryBatch = await dbGet(
-    `SELECT batch, expiry, mrp, rate
+    `SELECT batch, expiry, mrp, rate, purchaseRate
      FROM product_batches
      WHERE productId = ?
      ORDER BY CASE WHEN stock > 0 THEN 0 ELSE 1 END,
@@ -36,11 +100,12 @@ async function syncProductStock(productId) {
   await dbRun(
     `UPDATE products
      SET stock = ?, batch = COALESCE(?, batch), expiry = COALESCE(?, expiry),
-         mrp = COALESCE(?, mrp), rate = COALESCE(?, rate)
+         mrp = COALESCE(?, mrp), rate = COALESCE(?, rate),
+         purchaseRate = COALESCE(?, purchaseRate)
      WHERE id = ?`,
     [
       total?.stock || 0, primaryBatch?.batch, primaryBatch?.expiry,
-      primaryBatch?.mrp, primaryBatch?.rate, productId
+      primaryBatch?.mrp, primaryBatch?.rate, primaryBatch?.purchaseRate, productId
     ]
   );
 }
@@ -88,6 +153,65 @@ app.get('/api/products', async (req, res) => {
       'WHERE COALESCE(isCatalog, 0) = 0'
     );
     res.json(products);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/products/catalog-stats', async (req, res) => {
+  try {
+    const inventory = await dbGet(
+      'SELECT COUNT(*) AS count FROM products WHERE COALESCE(isCatalog, 0) = 0'
+    );
+    const catalog = await dbGet(
+      'SELECT COUNT(*) AS count FROM products WHERE COALESCE(isCatalog, 0) = 1'
+    );
+    res.json({
+      inventory: Number(inventory?.count) || 0,
+      catalog: Number(catalog?.count) || 0,
+      total: (Number(inventory?.count) || 0) + (Number(catalog?.count) || 0),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/products/catalog', async (req, res) => {
+  try {
+    const query = String(req.query.q || '').trim();
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(10, Number(req.query.limit) || 50));
+    const offset = (page - 1) * limit;
+    const where = query
+      ? `WHERE name LIKE ? COLLATE NOCASE
+         OR COALESCE(hsn, '') LIKE ?
+         OR COALESCE(manufacturer, '') LIKE ? COLLATE NOCASE`
+      : '';
+    const params = query ? [`%${query}%`, `%${query}%`, `%${query}%`] : [];
+
+    const countRow = await dbGet(
+      `SELECT COUNT(*) AS count FROM products ${where}`,
+      params
+    );
+    const total = Number(countRow?.count) || 0;
+    const products = await dbAll(
+      `SELECT id, name, hsn, category, manufacturer, grams, packType,
+              mrp, rate, purchaseRate, stock, minStock, expiry, batch,
+              boxNo, rackLocation, isCatalog
+       FROM products
+       ${where}
+       ORDER BY name COLLATE NOCASE
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    res.json({
+      products,
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -163,7 +287,7 @@ app.post('/api/products/catalog-import', async (req, res) => {
 
 app.post('/api/products', async (req, res) => {
   const {
-    name, hsn, category, mrp, rate, cgst, sgst, stock, minStock,
+    name, hsn, category, mrp, rate, purchaseRate, cgst, sgst, stock, minStock,
     expiry, batch, batches, manufacturer, grams, packType, boxNo, rackLocation
   } = req.body;
   let transactionStarted = false;
@@ -179,6 +303,7 @@ app.post('/api/products', async (req, res) => {
             stock: Math.max(0, Number(item.stock) || 0),
             mrp: Number(item.mrp ?? mrp) || 0,
             rate: Number(item.rate ?? rate) || 0,
+            purchaseRate: Number(item.purchaseRate ?? purchaseRate ?? item.rate ?? rate) || 0,
             cgst: Number(item.cgst ?? cgst) || 0,
             sgst: Number(item.sgst ?? sgst) || 0,
           }))
@@ -201,6 +326,7 @@ app.post('/api/products', async (req, res) => {
       stock: Math.max(0, Number(stock) || 0),
       mrp: Number(mrp) || 0,
       rate: Number(rate) || 0,
+      purchaseRate: Number(purchaseRate ?? rate) || 0,
       cgst: Number(cgst) || 0,
       sgst: Number(sgst) || 0,
     };
@@ -209,10 +335,10 @@ app.post('/api/products', async (req, res) => {
       : primaryBatch.stock;
 
     const result = await dbRun(
-      `INSERT INTO products (name, hsn, category, mrp, rate, cgst, sgst, stock, minStock, expiry, batch, manufacturer, grams, packType, boxNo, rackLocation)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO products (name, hsn, category, mrp, rate, purchaseRate, cgst, sgst, stock, minStock, expiry, batch, manufacturer, grams, packType, boxNo, rackLocation)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        name, hsn, category, primaryBatch.mrp, primaryBatch.rate,
+        name, hsn, category, primaryBatch.mrp, primaryBatch.rate, primaryBatch.purchaseRate,
         primaryBatch.cgst, primaryBatch.sgst, totalStock, minStock,
         primaryBatch.expiry, primaryBatch.batch, manufacturer,
         grams || '', packType || '', boxNo || '', rackLocation || ''
@@ -223,11 +349,11 @@ app.post('/api/products', async (req, res) => {
       : [{ ...primaryBatch, batch: primaryBatch.batch || `DEFAULT-${result.lastID}` }];
     for (const item of batchesToInsert) {
       await dbRun(
-        `INSERT INTO product_batches (productId, batch, expiry, stock, mrp, rate, cgst, sgst)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO product_batches (productId, batch, expiry, stock, mrp, rate, purchaseRate, cgst, sgst)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.lastID, item.batch, item.expiry, item.stock,
-          item.mrp, item.rate, item.cgst, item.sgst
+          item.mrp, item.rate, item.purchaseRate, item.cgst, item.sgst
         ]
       );
     }
@@ -286,6 +412,164 @@ app.put('/api/products/:id', async (req, res) => {
   }
 });
 
+app.get('/api/products/:id/adjustments', async (req, res) => {
+  try {
+    const rows = await dbAll(
+      `SELECT adjustment.*, batch.batch
+       FROM inventory_adjustments adjustment
+       JOIN product_batches batch ON batch.id = adjustment.batchId
+       WHERE adjustment.productId = ?
+       ORDER BY adjustment.createdAt DESC
+       LIMIT 50`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/products/:id/adjustments', async (req, res) => {
+  const productId = Number(req.params.id);
+  const adjustmentType = String(req.body?.adjustmentType || '').toLowerCase();
+  const quantity = Math.max(0, Number(req.body?.quantity) || 0);
+  const reason = String(req.body?.reason || '').trim().slice(0, 500);
+  const allowedTypes = new Set(['increase', 'decrease', 'set', 'price', 'add_stock']);
+  const batchName = String(req.body?.batch || '').trim();
+  const rawBatchId = Number(req.body?.batchId);
+  const hasValidBatchId = Number.isInteger(rawBatchId) && rawBatchId > 0;
+  // Any free-text batch number is allowed — create/reuse that batch for catalog or temp stock.
+  const createNewBatch =
+    Boolean(req.body?.createNewBatch) ||
+    adjustmentType === 'add_stock' ||
+    Boolean(batchName) ||
+    !hasValidBatchId;
+  let batchId = hasValidBatchId ? rawBatchId : NaN;
+
+  if (!Number.isInteger(productId) || productId <= 0) {
+    return res.status(400).json({ error: 'Select a valid product' });
+  }
+  if (!allowedTypes.has(adjustmentType)) {
+    return res.status(400).json({ error: 'Invalid adjustment type' });
+  }
+  if (adjustmentType !== 'price' && adjustmentType !== 'set' && quantity <= 0) {
+    return res.status(400).json({ error: 'Adjustment quantity must be greater than zero' });
+  }
+  if (!reason) {
+    return res.status(400).json({ error: 'Adjustment reason is required' });
+  }
+  if (createNewBatch && !batchName) {
+    return res.status(400).json({ error: 'Enter a batch number' });
+  }
+
+  let transactionStarted = false;
+  try {
+    await dbRun('BEGIN IMMEDIATE TRANSACTION');
+    transactionStarted = true;
+
+    const product = await dbGet('SELECT * FROM products WHERE id = ?', [productId]);
+    if (!product) throw new Error('Product was not found');
+
+    // Catalog / temporary stock: accept any batch number string and create it if needed.
+    if (createNewBatch) {
+      const newBatchName = batchName || `TEMP-${Date.now().toString().slice(-6)}`;
+      const existing = await dbGet(
+        'SELECT id FROM product_batches WHERE productId = ? AND LOWER(batch) = LOWER(?)',
+        [productId, newBatchName]
+      );
+      if (existing) {
+        batchId = existing.id;
+      } else {
+        const inserted = await dbRun(
+          `INSERT INTO product_batches (productId, batch, expiry, stock, mrp, rate, purchaseRate, cgst, sgst)
+           VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          [
+            productId,
+            newBatchName,
+            req.body?.expiry || '',
+            Math.max(0, Number(req.body?.mrp ?? product.mrp) || 0),
+            Math.max(0, Number(req.body?.saleRate ?? product.rate) || 0),
+            Math.max(0, Number(req.body?.purchaseRate ?? product.purchaseRate ?? product.rate) || 0),
+            Number(product.cgst) || 0,
+            Number(product.sgst) || 0,
+          ]
+        );
+        batchId = inserted.lastID;
+      }
+    }
+
+    const batch = await dbGet(
+      'SELECT * FROM product_batches WHERE id = ? AND productId = ?',
+      [batchId, productId]
+    );
+    if (!batch) throw new Error('Could not create or find the batch. Please try again.');
+
+    const effectiveType = adjustmentType === 'add_stock' ? 'increase' : adjustmentType;
+    const stockBefore = Number(batch.stock) || 0;
+    let stockAfter = stockBefore;
+    if (effectiveType === 'increase') stockAfter = stockBefore + quantity;
+    if (effectiveType === 'decrease') stockAfter = stockBefore - quantity;
+    if (effectiveType === 'set') stockAfter = quantity;
+    if (stockAfter < 0) throw new Error('Adjustment cannot make batch stock negative');
+
+    const purchaseRateAfter = req.body.purchaseRate === '' || req.body.purchaseRate == null
+      ? Number(batch.purchaseRate) || 0
+      : Math.max(0, Number(req.body.purchaseRate) || 0);
+    const saleRateAfter = req.body.saleRate === '' || req.body.saleRate == null
+      ? Number(batch.rate) || 0
+      : Math.max(0, Number(req.body.saleRate) || 0);
+    const mrpAfter = req.body.mrp === '' || req.body.mrp == null
+      ? Number(batch.mrp) || 0
+      : Math.max(0, Number(req.body.mrp) || 0);
+    const expiryAfter = req.body.expiry != null && String(req.body.expiry).trim() !== ''
+      ? normalizeExpiry(req.body.expiry)
+      : normalizeExpiry(batch.expiry);
+
+    await dbRun(
+      `UPDATE product_batches
+       SET stock = ?, purchaseRate = ?, rate = ?, mrp = ?, expiry = ?
+       WHERE id = ?`,
+      [stockAfter, purchaseRateAfter, saleRateAfter, mrpAfter, expiryAfter || '', batchId]
+    );
+
+    // Promote catalog medicines into active inventory once stock is added.
+    await dbRun(
+      `UPDATE products
+       SET isCatalog = 0,
+           purchaseRate = ?,
+           rate = ?,
+           mrp = ?,
+           batch = ?,
+           expiry = COALESCE(NULLIF(?, ''), expiry)
+       WHERE id = ?`,
+      [purchaseRateAfter, saleRateAfter, mrpAfter, batch.batch, expiryAfter || '', productId]
+    );
+
+    await dbRun(
+      `INSERT INTO inventory_adjustments
+       (productId, batchId, adjustmentType, quantity, stockBefore, stockAfter,
+        purchaseRateBefore, purchaseRateAfter, saleRateBefore, saleRateAfter,
+        mrpBefore, mrpAfter, reason, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        productId, batchId, effectiveType, quantity, stockBefore, stockAfter,
+        Number(batch.purchaseRate) || 0, purchaseRateAfter,
+        Number(batch.rate) || 0, saleRateAfter,
+        Number(batch.mrp) || 0, mrpAfter, reason, Date.now()
+      ]
+    );
+    await syncProductStock(productId);
+
+    await dbRun('COMMIT');
+    transactionStarted = false;
+    const [updated] = await getProductsWithBatches('WHERE id = ?', [productId]);
+    res.json(updated);
+  } catch (err) {
+    if (transactionStarted) await dbRun('ROLLBACK').catch(() => {});
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.delete('/api/products/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -321,6 +605,109 @@ app.post('/api/customers', async (req, res) => {
   }
 });
 
+// ─── DOCUMENT NUMBER SEQUENCES (PO2607001 / SL2607001) ───────────────────────
+function currentYyMm(date = new Date()) {
+  const yy = String(date.getFullYear()).slice(-2);
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  return `${yy}${mm}`;
+}
+
+async function nextDocumentNumber(prefix) {
+  const yymm = currentYyMm();
+  await dbRun('BEGIN IMMEDIATE TRANSACTION');
+  try {
+    let row = await dbGet(
+      'SELECT lastNo FROM document_sequences WHERE prefix = ? AND yymm = ?',
+      [prefix, yymm]
+    );
+    let next = 1;
+    if (row) {
+      next = Number(row.lastNo || 0) + 1;
+      await dbRun(
+        'UPDATE document_sequences SET lastNo = ? WHERE prefix = ? AND yymm = ?',
+        [next, prefix, yymm]
+      );
+    } else {
+      // Seed from any existing docs already saved for this month (legacy / imports).
+      const like = `${prefix}${yymm}%`;
+      const existing = await dbAll(
+        `SELECT id FROM invoices WHERE id LIKE ?
+         UNION ALL
+         SELECT id FROM purchase_invoices WHERE id LIKE ?`,
+        [like, like]
+      );
+      let max = 0;
+      for (const item of existing) {
+        const match = String(item.id || '').match(new RegExp(`^${prefix}${yymm}(\\d+)$`));
+        if (match) max = Math.max(max, Number(match[1]));
+      }
+      next = max + 1;
+      await dbRun(
+        'INSERT INTO document_sequences (prefix, yymm, lastNo) VALUES (?, ?, ?)',
+        [prefix, yymm, next]
+      );
+    }
+    await dbRun('COMMIT');
+    return `${prefix}${yymm}${String(next).padStart(3, '0')}`;
+  } catch (err) {
+    await dbRun('ROLLBACK').catch(() => {});
+    throw err;
+  }
+}
+
+app.post('/api/document-numbers/next', async (req, res) => {
+  try {
+    const type = String(req.body?.type || '').toLowerCase();
+    const prefix = type === 'purchase' || type === 'po' ? 'PO'
+      : type === 'sale' || type === 'sl' ? 'SL'
+        : null;
+    if (!prefix) {
+      return res.status(400).json({ error: 'type must be purchase or sale' });
+    }
+    const id = await nextDocumentNumber(prefix);
+    res.json({ id, prefix });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function validateSupplierPayload(body) {
+  const name = String(body?.name || '').trim();
+  const phone = String(body?.phone || '').trim();
+  const gstin = String(body?.gstin || '').trim().toUpperCase();
+  const pan = String(body?.pan || '').trim().toUpperCase();
+  const address = String(body?.address || '').trim();
+
+  if (!name) return { error: 'Supplier name is required' };
+  if (!address) return { error: 'Full address is required' };
+  if (!phone) return { error: 'Phone number is required' };
+  if (!/^\d{10}$/.test(phone.replace(/\D/g, '')) && !/^\+?\d{10,15}$/.test(phone.replace(/[\s-]/g, ''))) {
+    return { error: 'Enter a valid phone number (10 digits)' };
+  }
+  if (!gstin) return { error: 'GST number is mandatory' };
+  if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin)) {
+    return { error: 'Enter a valid 15-character GSTIN' };
+  }
+  if (!pan) return { error: 'PAN number is mandatory' };
+  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) {
+    return { error: 'Enter a valid PAN (e.g. ABCDE1234F)' };
+  }
+  // PAN should match GSTIN characters 3–12
+  if (gstin.slice(2, 12) !== pan) {
+    return { error: 'PAN must match the GSTIN (characters 3–12 of GSTIN)' };
+  }
+
+  return {
+    data: {
+      name,
+      phone: phone.replace(/[\s-]/g, ''),
+      gstin,
+      pan,
+      address,
+    },
+  };
+}
+
 // ─── SUPPLIERS ENDPOINTS ─────────────────────────────────────────────────────
 app.get('/api/suppliers', async (req, res) => {
   try {
@@ -332,14 +719,13 @@ app.get('/api/suppliers', async (req, res) => {
 });
 
 app.post('/api/suppliers', async (req, res) => {
-  const { name, phone, gstin, address } = req.body;
-  if (!name?.trim()) {
-    return res.status(400).json({ error: 'Supplier name is required' });
-  }
+  const checked = validateSupplierPayload(req.body);
+  if (checked.error) return res.status(400).json({ error: checked.error });
+  const { name, phone, gstin, pan, address } = checked.data;
   try {
     const result = await dbRun(
-      `INSERT INTO suppliers (name, phone, gstin, address) VALUES (?, ?, ?, ?)`,
-      [name.trim(), phone || '', gstin || '', address || '']
+      `INSERT INTO suppliers (name, phone, gstin, pan, address) VALUES (?, ?, ?, ?, ?)`,
+      [name, phone, gstin, pan, address]
     );
     const newSupplier = await dbGet('SELECT * FROM suppliers WHERE id = ?', [result.lastID]);
     res.status(201).json(newSupplier);
@@ -350,16 +736,15 @@ app.post('/api/suppliers', async (req, res) => {
 
 app.put('/api/suppliers/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, phone, gstin, address } = req.body;
-  if (!name?.trim()) {
-    return res.status(400).json({ error: 'Supplier name is required' });
-  }
+  const checked = validateSupplierPayload(req.body);
+  if (checked.error) return res.status(400).json({ error: checked.error });
+  const { name, phone, gstin, pan, address } = checked.data;
   try {
     const result = await dbRun(
       `UPDATE suppliers
-       SET name = ?, phone = ?, gstin = ?, address = ?
+       SET name = ?, phone = ?, gstin = ?, pan = ?, address = ?
        WHERE id = ?`,
-      [name.trim(), phone || '', gstin || '', address || '', id]
+      [name, phone, gstin, pan, address, id]
     );
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Supplier not found' });
@@ -426,21 +811,25 @@ app.post('/api/invoices', async (req, res) => {
     transactionStarted = true;
 
     if (Array.isArray(items)) {
-      const today = new Date().toISOString().slice(0, 10);
       for (const item of items) {
         if (!item.product?.id || !item.batchId) {
           throw new Error(`Select a batch for ${item.product?.name || 'every product'}`);
         }
-        const result = await dbRun(
-          `UPDATE product_batches
-           SET stock = stock - ?
-           WHERE id = ? AND productId = ? AND stock >= ?
-             AND (expiry IS NULL OR expiry = '' OR expiry >= ?)`,
-          [item.qty, item.batchId, item.product.id, item.qty, today]
+        const batch = await dbGet(
+          'SELECT * FROM product_batches WHERE id = ? AND productId = ?',
+          [item.batchId, item.product.id]
         );
-        if (result.changes === 0) {
-          throw new Error(`Insufficient stock for ${item.product.name} (${item.batch || 'selected batch'})`);
+        if (!batch) throw new Error(`Batch not found for ${item.product.name}`);
+        if (!isExpiryValid(batch.expiry)) {
+          throw new Error(`${item.product.name} (${batch.batch}) is expired`);
         }
+        if (Number(batch.stock) < Number(item.qty)) {
+          throw new Error(`Insufficient stock for ${item.product.name} (${item.batch || batch.batch})`);
+        }
+        await dbRun(
+          `UPDATE product_batches SET stock = stock - ? WHERE id = ? AND productId = ? AND stock >= ?`,
+          [item.qty, item.batchId, item.product.id, item.qty]
+        );
         await syncProductStock(item.product.id);
       }
     }
@@ -579,6 +968,9 @@ app.get('/api/purchase-invoices', async (req, res) => {
       } else {
         pur.items = [];
       }
+      pur.hasDocument = Boolean(pur.documentName || pur.documentPath);
+      // Do not expose absolute filesystem paths to the browser
+      delete pur.documentPath;
     });
     res.json(purchases);
   } catch (err) {
@@ -587,17 +979,34 @@ app.get('/api/purchase-invoices', async (req, res) => {
 });
 
 app.post('/api/purchase-invoices', async (req, res) => {
-  const { id, date, supplier, supplierId, amount, status, items } = req.body;
+  const { id, date, supplier, supplierId, amount, status, items, document } = req.body;
   let transactionStarted = false;
+  let savedDoc = null;
   try {
+    // Prefer attaching document via /document endpoint for large files.
+    // Still accept small payloads here for compatibility.
+    if (document?.dataBase64) {
+      try {
+        savedDoc = savePurchaseDocument(id, document);
+      } catch (docErr) {
+        console.error('[Purchase] Document save failed (will continue without file):', docErr.message);
+        savedDoc = null;
+      }
+    }
+
     await dbRun('BEGIN IMMEDIATE TRANSACTION');
     transactionStarted = true;
 
     await dbRun(
       `INSERT INTO purchase_invoices
-       (id, date, supplier, supplierId, amount, status, items)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, date, supplier, supplierId || null, amount, status, JSON.stringify(items || [])]
+       (id, date, supplier, supplierId, amount, status, items, documentName, documentMime, documentPath)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, date, supplier, supplierId || null, amount, status, JSON.stringify(items || []),
+        savedDoc?.documentName || null,
+        savedDoc?.documentMime || null,
+        savedDoc?.documentPath || null,
+      ]
     );
 
     // Merge repeated receipts into the same product + batch number.
@@ -606,21 +1015,24 @@ app.post('/api/purchase-invoices', async (req, res) => {
         if (!item.product?.id) continue;
         const batchName = String(item.batch || '').trim();
         if (!batchName) throw new Error(`Batch number is required for ${item.product.name}`);
+        const expiry = normalizeExpiry(item.expiry || '');
 
         await dbRun(
           `INSERT INTO product_batches
-             (productId, batch, expiry, stock, mrp, rate, cgst, sgst)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             (productId, batch, expiry, stock, mrp, rate, purchaseRate, cgst, sgst)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(productId, batch) DO UPDATE SET
              stock = product_batches.stock + excluded.stock,
              expiry = excluded.expiry,
              mrp = excluded.mrp,
              rate = excluded.rate,
+             purchaseRate = excluded.purchaseRate,
              cgst = excluded.cgst,
              sgst = excluded.sgst`,
           [
-            item.product.id, batchName, item.expiry || '', Number(item.qty) || 0,
-            item.mrp, item.rate, item.cgst, item.sgst
+            item.product.id, batchName, expiry, Number(item.qty) || 0,
+            item.mrp, item.saleRate ?? item.mrp ?? item.rate, item.rate,
+            item.cgst, item.sgst
           ]
         );
         await dbRun(
@@ -640,10 +1052,76 @@ app.post('/api/purchase-invoices', async (req, res) => {
     if (newPurchase && newPurchase.items) {
       newPurchase.items = JSON.parse(newPurchase.items);
     }
+    if (newPurchase) {
+      newPurchase.hasDocument = Boolean(newPurchase.documentName || newPurchase.documentPath);
+      delete newPurchase.documentPath;
+    }
     res.status(201).json(newPurchase);
   } catch (err) {
     if (transactionStarted) await dbRun('ROLLBACK').catch(() => {});
+    if (savedDoc?.documentPath) {
+      try { fs.unlinkSync(savedDoc.documentPath); } catch { /* ignore */ }
+    }
     res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/purchase-invoices/:id/document', async (req, res) => {
+  try {
+    const purchaseId = String(req.params.id || '').trim();
+    const purchase = await dbGet('SELECT id, documentPath FROM purchase_invoices WHERE id = ?', [purchaseId]);
+    if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+    if (!req.body?.dataBase64) {
+      return res.status(400).json({ error: 'Document data is required' });
+    }
+
+    const savedDoc = savePurchaseDocument(purchaseId, {
+      name: req.body.name,
+      mime: req.body.mime,
+      dataBase64: req.body.dataBase64,
+    });
+    if (!savedDoc) return res.status(400).json({ error: 'Failed to save document' });
+
+    // Remove previous file if replacing
+    if (purchase.documentPath && purchase.documentPath !== savedDoc.documentPath) {
+      try { fs.unlinkSync(purchase.documentPath); } catch { /* ignore */ }
+    }
+
+    await dbRun(
+      `UPDATE purchase_invoices
+       SET documentName = ?, documentMime = ?, documentPath = ?
+       WHERE id = ?`,
+      [savedDoc.documentName, savedDoc.documentMime, savedDoc.documentPath, purchaseId]
+    );
+
+    res.json({
+      id: purchaseId,
+      documentName: savedDoc.documentName,
+      documentMime: savedDoc.documentMime,
+      hasDocument: true,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/purchase-invoices/:id/document', async (req, res) => {
+  try {
+    const purchase = await dbGet(
+      'SELECT documentName, documentMime, documentPath FROM purchase_invoices WHERE id = ?',
+      [req.params.id]
+    );
+    if (!purchase?.documentPath || !fs.existsSync(purchase.documentPath)) {
+      return res.status(404).json({ error: 'No purchase document attached' });
+    }
+    res.setHeader('Content-Type', purchase.documentMime || 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${encodeURIComponent(purchase.documentName || 'purchase-document')}"`
+    );
+    fs.createReadStream(purchase.documentPath).pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -730,9 +1208,9 @@ app.put('/api/company', async (req, res) => {
 });
 
 // ─── BACKUP ENDPOINT ─────────────────────────────────────────────────────────
-app.post('/api/backup', (req, res) => {
+app.post('/api/backup', async (req, res) => {
   try {
-    const result = performBackup();
+    const result = await performBackup();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -1,13 +1,20 @@
 {
   "name": "pharmacy-billing",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
+  "author": "Pharmacy Billing",
+  "description": "Local pharmacy billing and inventory management",
   "scripts": {
     "server": "node server/server.js",
     "dev": "concurrently \"npm run server\" \"vite\"",
     "build": "vite build",
     "start": "node server/server.js",
+    "electron": "electron .",
+    "electron:dev": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win",
+    "dist:dir": "npm run build && electron-builder --win --dir",
     "install:autostart": "powershell -ExecutionPolicy Bypass -File ./scripts/install-autostart.ps1",
     "uninstall:autostart": "powershell -ExecutionPolicy Bypass -File ./scripts/uninstall-autostart.ps1",
     "lint": "oxlint",
@@ -38,9 +45,54 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "^10.5.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "oxlint": "^1.71.0",
     "postcss": "^8.5.16",
     "tailwindcss": "^3.4.19",
     "vite": "^8.1.1"
+  },
+  "build": {
+    "appId": "com.pharmacy.billing",
+    "productName": "Pharmacy Billing",
+    "asar": true,
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/sqlite3/**"
+    ],
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "dist/**/*",
+      "package.json",
+      "!server/.env",
+      "!server/*.sqlite",
+      "!server/*.sqlite-*",
+      "!server/*.sqlite.bak*",
+      "!**/*.map"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "PharmacyBilling-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Pharmacy Billing"
+    }
   }
 }

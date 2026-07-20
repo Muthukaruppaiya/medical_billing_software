@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { X, Printer, CheckCircle, ReceiptText } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
+import { formatExpiry } from '../../utils/expiry';
 
 export default function PrintBillModal({ invoice, onClose, onNewBill }) {
   const { state } = useApp();
@@ -124,7 +125,7 @@ export default function PrintBillModal({ invoice, onClose, onNewBill }) {
                       <td className="p-2 border-b border-slate-100 text-slate-500">{item.product?.hsn || '-'}</td>
                       <td className="p-2 border-b border-slate-100 text-slate-500">
                         <span className="block">{item.batch || item.product?.batch || '-'}</span>
-                        <span className="text-[10px]">{item.expiry || item.product?.expiry || '-'}</span>
+                        <span className="text-[10px]">{formatExpiry(item.expiry || item.product?.expiry)}</span>
                       </td>
                       <td className="p-2 border-b border-slate-100 text-center font-bold">{item.qty}</td>
                       <td className="p-2 border-b border-slate-100 text-right">{fmt(item.rate)}</td>

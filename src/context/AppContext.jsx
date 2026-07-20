@@ -38,11 +38,16 @@ function appReducer(state, action) {
     case 'ADD_PRODUCT_SUCCESS':
       return { ...state, products: [...state.products, action.payload] };
 
-    case 'UPDATE_PRODUCT_SUCCESS':
+    case 'UPDATE_PRODUCT_SUCCESS': {
+      const exists = state.products.some(p => p.id === action.payload.id);
+      if (!exists) {
+        return { ...state, products: [...state.products, action.payload] };
+      }
       return {
         ...state,
         products: state.products.map(p => p.id === action.payload.id ? action.payload : p),
       };
+    }
 
     case 'DELETE_PRODUCT_SUCCESS':
       return { ...state, products: state.products.filter(p => p.id !== action.payload) };
@@ -63,6 +68,21 @@ function appReducer(state, action) {
       return {
         ...state,
         purchaseInvoices: [action.payload, ...state.purchaseInvoices],
+      };
+
+    case 'UPDATE_PURCHASE_DOCUMENT_SUCCESS':
+      return {
+        ...state,
+        purchaseInvoices: state.purchaseInvoices.map(purchase =>
+          purchase.id === action.payload.id
+            ? {
+                ...purchase,
+                documentName: action.payload.documentName,
+                documentMime: action.payload.documentMime,
+                hasDocument: true,
+              }
+            : purchase
+        ),
       };
 
     case 'ADD_CUSTOMER_SUCCESS':
@@ -155,6 +175,18 @@ export function AppProvider({ children }) {
           return updatedProduct;
         }
 
+        case 'ADJUST_INVENTORY': {
+          const { productId, ...payload } = action.payload;
+          const res = await fetch(`/api/products/${productId}/adjustments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const updatedProduct = await readJson(res);
+          dispatch({ type: 'UPDATE_PRODUCT_SUCCESS', payload: updatedProduct });
+          return updatedProduct;
+        }
+
         case 'DELETE_PRODUCT': {
           await fetch(`/api/products/${action.payload}`, {
             method: 'DELETE',
@@ -187,15 +219,70 @@ export function AppProvider({ children }) {
         }
 
         case 'ADD_PURCHASE': {
+          const { document, ...purchasePayload } = action.payload || {};
           const res = await fetch('/api/purchase-invoices', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(action.payload),
+            body: JSON.stringify(purchasePayload),
           });
-          const newPurchase = await readJson(res);
+          let newPurchase = await readJson(res);
+
+          // Attach uploaded bill in a second request (avoids huge JSON body failures).
+          if (document?.dataBase64 && newPurchase?.id) {
+            try {
+              const docRes = await fetch(
+                `/api/purchase-invoices/${encodeURIComponent(newPurchase.id)}/document`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(document),
+                }
+              );
+              const docData = await docRes.json();
+              if (!docRes.ok) throw new Error(docData.error || 'Document attach failed');
+              newPurchase = {
+                ...newPurchase,
+                documentName: docData.documentName,
+                documentMime: docData.documentMime,
+                hasDocument: true,
+              };
+            } catch (docError) {
+              console.error(docError);
+              // Purchase is saved; warn but don't fail the whole save
+              alert(
+                `Purchase ${newPurchase.id} saved, but the document could not be attached: ${docError.message}`
+              );
+            }
+          }
+
           dispatch({ type: 'ADD_PURCHASE_SUCCESS', payload: newPurchase });
           await refreshProducts();
           return newPurchase;
+        }
+
+        case 'ATTACH_PURCHASE_DOCUMENT': {
+          const { id, document } = action.payload || {};
+          if (!id || !document?.dataBase64) {
+            throw new Error('Purchase id and document are required');
+          }
+          const docRes = await fetch(
+            `/api/purchase-invoices/${encodeURIComponent(id)}/document`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(document),
+            }
+          );
+          const docData = await readJson(docRes);
+          dispatch({
+            type: 'UPDATE_PURCHASE_DOCUMENT_SUCCESS',
+            payload: {
+              id,
+              documentName: docData.documentName,
+              documentMime: docData.documentMime,
+            },
+          });
+          return docData;
         }
 
         case 'ADD_CUSTOMER': {

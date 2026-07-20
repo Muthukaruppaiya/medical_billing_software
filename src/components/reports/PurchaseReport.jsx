@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Download, Calendar } from 'lucide-react';
+import { Download, Calendar, FileText } from 'lucide-react';
 import dayjs from 'dayjs';
 import PurchaseDetailModal from '../purchase/PurchaseDetailModal';
 
@@ -143,11 +143,12 @@ export default function PurchaseReport() {
                   <th>Date</th>
                   <th>Amount</th>
                   <th>Status</th>
+                  <th>Document</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredPurchases.length === 0 ? (
-                  <tr><td colSpan={5} className="text-center py-12 text-slate-400">No purchase orders found in this date range.</td></tr>
+                  <tr><td colSpan={6} className="text-center py-12 text-slate-400">No purchase orders found in this date range.</td></tr>
                 ) : (
                   filteredPurchases.map(po => (
                     <tr key={po.id}>
@@ -165,6 +166,28 @@ export default function PurchaseReport() {
                           {po.status}
                         </span>
                       </td>
+                      <td>
+                        {po.hasDocument || po.documentName ? (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPurchase(po)}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 hover:underline"
+                            title={po.documentName || 'View document'}
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            View
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPurchase(po)}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-amber-600 hover:underline"
+                            title="Attach missing document"
+                          >
+                            Attach
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -179,6 +202,7 @@ export default function PurchaseReport() {
         <PurchaseDetailModal
           purchase={selectedPurchase}
           onClose={() => setSelectedPurchase(null)}
+          onPurchaseUpdated={(updated) => setSelectedPurchase(updated)}
         />
       )}
     </div>

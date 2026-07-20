@@ -1,7 +1,8 @@
 import { Minus, Plus, Trash2 } from 'lucide-react';
+import ExpiryInput from '../ui/ExpiryInput';
 
 export default function PurchaseRow({ row, index, onUpdate, onRemove }) {
-  const { product, qty, rate, cgst, sgst, batch, expiry, mrp } = row;
+  const { product, qty, rate, saleRate, cgst, sgst, batch, expiry, mrp } = row;
   const lineAmt = qty * rate;
   const cgstAmt = (lineAmt * cgst) / 100;
   const sgstAmt = (lineAmt * sgst) / 100;
@@ -29,13 +30,12 @@ export default function PurchaseRow({ row, index, onUpdate, onRemove }) {
         />
       </td>
 
-      {/* Expiry */}
+      {/* EXP MM/YY */}
       <td className="px-3 py-2">
-        <input
-          type="date"
+        <ExpiryInput
           value={expiry}
-          onChange={e => set('expiry', e.target.value)}
-          className="form-input w-32 text-sm"
+          onChange={value => set('expiry', value)}
+          className="form-input w-16 text-sm"
         />
       </td>
 
@@ -65,6 +65,20 @@ export default function PurchaseRow({ row, index, onUpdate, onRemove }) {
             type="number"
             value={rate}
             onChange={e => set('rate', Number(e.target.value))}
+            className="form-input pl-5 w-24 text-sm"
+          />
+        </div>
+      </td>
+
+      {/* Sale Rate */}
+      <td className="px-3 py-2">
+        <div className="relative">
+          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">₹</span>
+          <input
+            type="number"
+            min="0"
+            value={saleRate}
+            onChange={e => set('saleRate', Math.max(0, Number(e.target.value)))}
             className="form-input pl-5 w-24 text-sm"
           />
         </div>

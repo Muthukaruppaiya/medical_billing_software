@@ -1,5 +1,5 @@
 import { Minus, Plus, Trash2 } from 'lucide-react';
-import dayjs from 'dayjs';
+import { formatExpiry, isExpiryValid } from '../../utils/expiry';
 
 export default function ProductRow({ row, index, onUpdate, onRemove }) {
   const { product, qty, rate, batchId, batch, expiry, maxStock } = row;
@@ -47,18 +47,17 @@ export default function ProductRow({ row, index, onUpdate, onRemove }) {
         >
           {(product.batches || [])
             .filter(item =>
-              (Number(item.stock) > 0 &&
-                (!item.expiry || !dayjs(item.expiry).isBefore(dayjs(), 'day'))) ||
+              (Number(item.stock) > 0 && isExpiryValid(item.expiry)) ||
               item.id === batchId
             )
             .map(item => (
               <option key={item.id} value={item.id}>
-                {item.batch} · Exp {item.expiry || 'N/A'} · Stock {item.stock}
+                {item.batch} · EXP {formatExpiry(item.expiry)} · Stock {item.stock}
               </option>
             ))}
         </select>
         <p className="text-[10px] text-slate-400 mt-1">
-          Selected: {batch} · {expiry || 'No expiry'}
+          Selected: {batch} · EXP {formatExpiry(expiry)}
         </p>
       </td>
 

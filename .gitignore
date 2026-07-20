@@ -21,6 +21,12 @@ backups/
 *.sqlite
 eng.traineddata
 
+# Electron build output
+release/
+
+# Uploaded purchase documents
+server/uploads/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
