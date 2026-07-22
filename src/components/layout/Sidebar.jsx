@@ -49,7 +49,7 @@ export default function Sidebar() {
             </div>
             <div>
               <p className="text-white font-bold text-sm leading-tight">MediCare</p>
-              <p className="text-slate-400 text-[10px]">Pharmacy POS</p>
+              <p className="text-slate-400 text-[10px]">Pharmacy POS · v2</p>
             </div>
           </div>
         )}

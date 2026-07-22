@@ -7,18 +7,24 @@ import { fileURLToPath } from 'url';
 import { initDb, dbAll, dbRun, dbGet } from './db.js';
 import { startBackupJob, performBackup } from './backup.js';
 
-dotenv.config();
+// In Electron we pass env from main; don't let a local .env override the desktop port.
+if (!process.env.PHARMACY_PORT) {
+  dotenv.config();
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const distPath = path.join(__dirname, '..', 'dist');
+const distPath = process.env.UI_DIST_PATH
+  ? path.resolve(process.env.UI_DIST_PATH)
+  : path.join(__dirname, '..', 'dist');
 const uploadRoot = process.env.UPLOAD_DIR
   ? path.resolve(process.env.UPLOAD_DIR)
   : path.join(__dirname, 'uploads');
 const purchaseDocDir = path.join(uploadRoot, 'purchase-docs');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+// Prefer PHARMACY_PORT so a shell/dotenv PORT=5000 cannot steal the Electron port.
+const PORT = Number(process.env.PHARMACY_PORT || process.env.PORT) || 5000;
 
 app.use(cors());
 app.use(express.json({ limit: '40mb' }));
@@ -677,6 +683,7 @@ function validateSupplierPayload(body) {
   const gstin = String(body?.gstin || '').trim().toUpperCase();
   const pan = String(body?.pan || '').trim().toUpperCase();
   const address = String(body?.address || '').trim();
+  const drugLicense = String(body?.drugLicense || '').trim();
 
   if (!name) return { error: 'Supplier name is required' };
   if (!address) return { error: 'Full address is required' };
@@ -704,6 +711,7 @@ function validateSupplierPayload(body) {
       gstin,
       pan,
       address,
+      drugLicense,
     },
   };
 }
@@ -721,11 +729,11 @@ app.get('/api/suppliers', async (req, res) => {
 app.post('/api/suppliers', async (req, res) => {
   const checked = validateSupplierPayload(req.body);
   if (checked.error) return res.status(400).json({ error: checked.error });
-  const { name, phone, gstin, pan, address } = checked.data;
+  const { name, phone, gstin, pan, address, drugLicense } = checked.data;
   try {
     const result = await dbRun(
-      `INSERT INTO suppliers (name, phone, gstin, pan, address) VALUES (?, ?, ?, ?, ?)`,
-      [name, phone, gstin, pan, address]
+      `INSERT INTO suppliers (name, phone, gstin, pan, address, drugLicense) VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, phone, gstin, pan, address, drugLicense || null]
     );
     const newSupplier = await dbGet('SELECT * FROM suppliers WHERE id = ?', [result.lastID]);
     res.status(201).json(newSupplier);
@@ -738,13 +746,13 @@ app.put('/api/suppliers/:id', async (req, res) => {
   const { id } = req.params;
   const checked = validateSupplierPayload(req.body);
   if (checked.error) return res.status(400).json({ error: checked.error });
-  const { name, phone, gstin, pan, address } = checked.data;
+  const { name, phone, gstin, pan, address, drugLicense } = checked.data;
   try {
     const result = await dbRun(
       `UPDATE suppliers
-       SET name = ?, phone = ?, gstin = ?, pan = ?, address = ?
+       SET name = ?, phone = ?, gstin = ?, pan = ?, address = ?, drugLicense = ?
        WHERE id = ?`,
-      [name, phone, gstin, pan, address, id]
+      [name, phone, gstin, pan, address, drugLicense || null, id]
     );
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Supplier not found' });
@@ -803,7 +811,8 @@ app.get('/api/invoices', async (req, res) => {
 app.post('/api/invoices', async (req, res) => {
   const {
     id, date, customer, customerId, amount, tax, status, type,
-    items, discount, doctor, patient, gstin, customerAddress, createdAt
+    items, discount, doctor, patient, gstin, customerAddress, createdAt,
+    amountPaid, dueAmount, paymentStatus, paymentMethod,
   } = req.body;
   let transactionStarted = false;
   try {
@@ -834,15 +843,23 @@ app.post('/api/invoices', async (req, res) => {
       }
     }
 
+    const billAmount = Number(amount) || 0;
+    const paid = amountPaid != null ? Number(amountPaid) : billAmount;
+    const due = dueAmount != null ? Number(dueAmount) : Math.max(0, billAmount - paid);
+    const payStatus = paymentStatus
+      || (due <= 0.009 ? 'Fully Paid' : (paid > 0 ? 'Partial' : 'Unpaid'));
+    const invoiceStatus = status || (due <= 0.009 ? 'Paid' : (paid > 0 ? 'Pending' : 'Unpaid'));
+    const payMethod = String(paymentMethod || 'Cash').trim() || 'Cash';
+
     const savedAt = Number(createdAt) || Date.now();
     await dbRun(
       `INSERT INTO invoices
-       (id, date, customer, customerId, amount, tax, status, type, items, discount, doctor, patient, gstin, customerAddress, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, date, customer, customerId, amount, tax, status, type, items, discount, doctor, patient, gstin, customerAddress, createdAt, amountPaid, dueAmount, paymentStatus, paymentMethod)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        id, date, customer, customerId || null, amount, tax, status, type || 'sale',
+        id, date, customer, customerId || null, billAmount, tax, invoiceStatus, type || 'sale',
         JSON.stringify(items || []), discount || 0, doctor || '', patient || '',
-        gstin || '', customerAddress || '', savedAt
+        gstin || '', customerAddress || '', savedAt, paid, due, payStatus, payMethod,
       ]
     );
 
@@ -979,7 +996,12 @@ app.get('/api/purchase-invoices', async (req, res) => {
 });
 
 app.post('/api/purchase-invoices', async (req, res) => {
-  const { id, date, supplier, supplierId, amount, status, items, document } = req.body;
+  const {
+    id, date, supplier, supplierId, amount, status, items, document,
+    supplierAddress, supplierPhone, supplierGstin, supplierPan,
+    goodsValue, discountAmount, taxAmount, roundOff, cashDiscPercent,
+    amountPaid, dueAmount, paymentStatus, paymentMethod, supplierDrugLicense,
+  } = req.body;
   let transactionStarted = false;
   let savedDoc = null;
   try {
@@ -997,15 +1019,39 @@ app.post('/api/purchase-invoices', async (req, res) => {
     await dbRun('BEGIN IMMEDIATE TRANSACTION');
     transactionStarted = true;
 
+    const billAmount = Number(amount) || 0;
+    const paid = amountPaid != null ? Number(amountPaid) : billAmount;
+    const due = dueAmount != null ? Number(dueAmount) : Math.max(0, billAmount - paid);
+    const payStatus = paymentStatus
+      || (due <= 0.009 ? 'Fully Paid' : (paid > 0 ? 'Partial' : 'Unpaid'));
+    const payMethod = String(paymentMethod || 'Cash').trim() || 'Cash';
+
     await dbRun(
       `INSERT INTO purchase_invoices
-       (id, date, supplier, supplierId, amount, status, items, documentName, documentMime, documentPath)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, date, supplier, supplierId, amount, status, items, documentName, documentMime, documentPath,
+        supplierAddress, supplierPhone, supplierGstin, supplierPan, supplierDrugLicense,
+        goodsValue, discountAmount, taxAmount, roundOff, cashDiscPercent,
+        amountPaid, dueAmount, paymentStatus, paymentMethod)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        id, date, supplier, supplierId || null, amount, status, JSON.stringify(items || []),
+        id, date, supplier, supplierId || null, billAmount, status, JSON.stringify(items || []),
         savedDoc?.documentName || null,
         savedDoc?.documentMime || null,
         savedDoc?.documentPath || null,
+        supplierAddress || null,
+        supplierPhone || null,
+        supplierGstin || null,
+        supplierPan || null,
+        supplierDrugLicense || null,
+        Number(goodsValue) || 0,
+        Number(discountAmount) || 0,
+        Number(taxAmount) || 0,
+        Number(roundOff) || 0,
+        Number(cashDiscPercent) || 0,
+        paid,
+        due,
+        payStatus,
+        payMethod,
       ]
     );
 
@@ -1226,6 +1272,29 @@ app.get(/^(?!\/api).*/, (req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Local Pharmacy Billing server running on http://localhost:${PORT}`);
+const server = app.listen(PORT, '127.0.0.1', () => {
+  console.log(`Local Pharmacy Billing server running on http://127.0.0.1:${PORT}`);
+  try {
+    const logDir = process.env.UPLOAD_DIR
+      ? path.dirname(process.env.UPLOAD_DIR)
+      : path.join(__dirname);
+    fs.writeFileSync(
+      path.join(logDir, 'server-listen-ok.log'),
+      `${new Date().toISOString()}\nlistening on 127.0.0.1:${PORT}\n`,
+      'utf8'
+    );
+  } catch (_) { /* ignore */ }
+});
+server.on('error', (err) => {
+  console.error(`Failed to bind API on port ${PORT}:`, err);
+  try {
+    const logDir = process.env.UPLOAD_DIR
+      ? path.dirname(process.env.UPLOAD_DIR)
+      : path.join(__dirname);
+    fs.writeFileSync(
+      path.join(logDir, 'server-listen-error.log'),
+      `${new Date().toISOString()}\nPORT=${PORT}\n${err.stack || err}\n`,
+      'utf8'
+    );
+  } catch (_) { /* ignore */ }
 });

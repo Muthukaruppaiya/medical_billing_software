@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useInvoice, nextDocumentNo } from '../../hooks/useInvoice';
 import ProductRow from './ProductRow';
@@ -9,6 +9,7 @@ import { Plus, Search, UserPlus } from 'lucide-react';
 import dayjs from 'dayjs';
 import clsx from 'clsx';
 import { isExpiryValid } from '../../utils/expiry';
+import { getCustomerDue, round2 } from '../../utils/money';
 
 const isSellableBatch = batch =>
   Number(batch.stock) > 0 && isExpiryValid(batch.expiry);
@@ -39,16 +40,20 @@ export default function SaleInvoice({ onSaved }) {
   const [patient, setPatient] = useState('');
   const [doctor, setDoctor] = useState('');
   const [customerAddress, setCustomerAddress] = useState('');
-
-  // Discount
-  const [discount, setDiscount] = useState(0);
-  const [discountType, setDiscountType] = useState('%'); // '%' or '₹'
+  const [paymentMode, setPaymentMode] = useState('full');
+  const [amountPaidInput, setAmountPaidInput] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('Cash');
 
   // Print Bill popup state
   const [savedInvoice, setSavedInvoice] = useState(null);
 
   const [invoiceNo, setInvoiceNo] = useState(saleNumberPreview);
   const totals    = useInvoice(cart);
+
+  const customerDue = useMemo(
+    () => getCustomerDue(state.invoices, customer),
+    [state.invoices, customer]
+  );
 
   // ── Customer search ───────────────────────────────────────────────────────
   const custResults = state.customers.filter(c =>
@@ -131,6 +136,7 @@ export default function SaleInvoice({ onSaved }) {
         maxStock: Number(selectedBatch.stock),
         qty:  1,
         rate: selectedBatch.rate ?? product.rate,
+        discPercent: 0,
         cgst: selectedBatch.cgst ?? product.cgst,
         sgst: selectedBatch.sgst ?? product.sgst,
       }]);
@@ -150,32 +156,34 @@ export default function SaleInvoice({ onSaved }) {
       return alert(`Select a valid batch and quantity for ${invalidItem.product.name}`);
     }
     
-    // Calculate final grand total based on discount
-    const discountVal = Number(discount) || 0;
-    const discountAmt = discountType === '%' 
-      ? (totals.subtotal * discountVal) / 100 
-      : discountVal;
-    const finalAmount = Math.max(0, totals.subtotal - discountAmt);
-
     try {
       const billId = await nextDocumentNo('sale');
       setInvoiceNo(billId);
+      const amountPaid = paymentMode === 'full'
+        ? totals.grandTotal
+        : Math.min(totals.grandTotal, Math.max(0, Number(amountPaidInput) || 0));
+      const dueAmount = round2(Math.max(0, totals.grandTotal - amountPaid));
+      const paymentStatus = dueAmount <= 0.009 ? 'Fully Paid' : (amountPaid > 0 ? 'Partial' : 'Unpaid');
       const invoice = {
         id:       billId,
         date:     dayjs().format('DD-MM-YYYY'),
         createdAt: Date.now(),
         customer: customer?.name || 'Walk-in Customer',
         customerId: customer?.id || null,
-        amount:   finalAmount,
+        amount:   totals.grandTotal,
         tax:      totals.totalTax,
-        status:   'Paid',
+        status:   dueAmount <= 0.009 ? 'Paid' : (amountPaid > 0 ? 'Pending' : 'Unpaid'),
         type:     'sale',
         items:    totals.rows,
         gstin:    gstin || customer?.gstin || '',
-        discount: discountAmt,
+        discount: totals.totalDiscount || 0,
         patient: patient.trim(),
         doctor: doctor.trim(),
         customerAddress: customerAddress.trim(),
+        amountPaid,
+        dueAmount,
+        paymentStatus,
+        paymentMethod,
       };
 
       const saved = await dispatch({ type: 'ADD_INVOICE', payload: invoice });
@@ -196,22 +204,25 @@ export default function SaleInvoice({ onSaved }) {
     setPatient('');
     setDoctor('');
     setCustomerAddress('');
-    setDiscount(0);
-    setDiscountType('%');
+    setPaymentMode('full');
+    setAmountPaidInput('');
+    setPaymentMethod('Cash');
     setInvoiceNo(saleNumberPreview());
   };
 
   return (
     <div className="space-y-5">
-      {/* ── Top bar ── */}
-      <div className="flex items-center justify-between">
+      <div className="panel flex items-center justify-between py-3 px-4">
         <div>
-          <h1 className="page-title">New Invoice</h1>
-          <p className="text-xs text-slate-400">Bill No: {invoiceNo} &nbsp;·&nbsp; {dayjs().format('DD-MM-YYYY')}</p>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Standard Invoice</p>
+          <p className="text-sm font-semibold text-slate-700 mt-0.5">
+            Bill No: <span className="text-primary-700">{invoiceNo}</span>
+            <span className="text-slate-400 font-normal"> · {dayjs().format('DD-MM-YYYY')}</span>
+          </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="panel grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <label className="form-label">Patient Name</label>
           <input
@@ -368,12 +379,15 @@ export default function SaleInvoice({ onSaved }) {
       {/* ── Selected Customer badge ── */}
       {customer && (
         <div className="flex items-start gap-4 px-4 py-2.5 bg-primary-50 border border-primary-200 rounded-xl text-sm animate-fade-in">
-          <UserPlus className="w-4 h-4 text-primary-500" />
+          <UserPlus className="w-4 h-4 text-primary-500 mt-0.5" />
           <div className="min-w-0">
             <span className="font-medium text-primary-700">{customer.name}</span>
             <span className="text-primary-500 ml-4">{customer.phone}</span>
             {customer.gstin && <span className="text-xs text-primary-400 ml-4">GSTIN: {customer.gstin}</span>}
             {customerAddress && <p className="text-xs text-primary-500 mt-1">{customerAddress}</p>}
+            <p className={`text-xs font-bold mt-1.5 ${customerDue > 0 ? 'text-danger' : 'text-success'}`}>
+              Previous Due: ₹{customerDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            </p>
           </div>
           <button
             onClick={() => {
@@ -400,6 +414,7 @@ export default function SaleInvoice({ onSaved }) {
                 <th>Batch / Expiry</th>
                 <th>Quantity</th>
                 <th>Sale Rate</th>
+                <th>Disc %</th>
                 <th>Total</th>
                 <th></th>
               </tr>
@@ -407,7 +422,7 @@ export default function SaleInvoice({ onSaved }) {
             <tbody>
               {cart.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400">
+                  <td colSpan={9} className="text-center py-12 text-slate-400">
                     Search and add products above to begin billing
                   </td>
                 </tr>
@@ -436,11 +451,18 @@ export default function SaleInvoice({ onSaved }) {
               gstin={gstin}
               onGstinChange={setGstin}
               onSave={handleSave}
-              onCancel={() => { setCart([]); setCustomer(null); setDiscount(0); }}
-              discount={discount}
-              discountType={discountType}
-              onDiscountChange={setDiscount}
-              onDiscountTypeChange={setDiscountType}
+              onCancel={() => { setCart([]); setCustomer(null); setPaymentMode('full'); setAmountPaidInput(''); setPaymentMethod('Cash'); }}
+              showPayment
+              paymentMode={paymentMode}
+              onPaymentModeChange={(mode) => {
+                setPaymentMode(mode);
+                if (mode === 'partial') setAmountPaidInput(String(totals.grandTotal));
+                else setAmountPaidInput('');
+              }}
+              amountPaidInput={amountPaidInput}
+              onAmountPaidChange={setAmountPaidInput}
+              paymentMethod={paymentMethod}
+              onPaymentMethodChange={setPaymentMethod}
             />
           </div>
         </div>

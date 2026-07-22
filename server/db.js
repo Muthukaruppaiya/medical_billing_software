@@ -165,6 +165,11 @@ export async function initDb() {
   } catch (e) {
     // Column already exists
   }
+  try {
+    await dbRun('ALTER TABLE suppliers ADD COLUMN drugLicense TEXT');
+  } catch (e) {
+    // Column already exists
+  }
 
   await dbRun(`
     CREATE TABLE IF NOT EXISTS document_sequences (
@@ -213,7 +218,11 @@ export async function initDb() {
     'ALTER TABLE invoices ADD COLUMN gstin TEXT',
     'ALTER TABLE invoices ADD COLUMN customerAddress TEXT',
     'ALTER TABLE invoices ADD COLUMN customerId INTEGER',
-    'ALTER TABLE invoices ADD COLUMN createdAt INTEGER'
+    'ALTER TABLE invoices ADD COLUMN createdAt INTEGER',
+    'ALTER TABLE invoices ADD COLUMN amountPaid REAL DEFAULT 0',
+    'ALTER TABLE invoices ADD COLUMN dueAmount REAL DEFAULT 0',
+    'ALTER TABLE invoices ADD COLUMN paymentStatus TEXT DEFAULT "Fully Paid"',
+    'ALTER TABLE invoices ADD COLUMN paymentMethod TEXT DEFAULT "Cash"',
   ];
   for (const sql of invoiceCols) {
     try { await dbRun(sql); } catch (e) { /* column already exists */ }
@@ -244,6 +253,20 @@ export async function initDb() {
     'ALTER TABLE purchase_invoices ADD COLUMN documentName TEXT',
     'ALTER TABLE purchase_invoices ADD COLUMN documentMime TEXT',
     'ALTER TABLE purchase_invoices ADD COLUMN documentPath TEXT',
+    'ALTER TABLE purchase_invoices ADD COLUMN supplierAddress TEXT',
+    'ALTER TABLE purchase_invoices ADD COLUMN supplierPhone TEXT',
+    'ALTER TABLE purchase_invoices ADD COLUMN supplierGstin TEXT',
+    'ALTER TABLE purchase_invoices ADD COLUMN supplierPan TEXT',
+    'ALTER TABLE purchase_invoices ADD COLUMN goodsValue REAL DEFAULT 0',
+    'ALTER TABLE purchase_invoices ADD COLUMN discountAmount REAL DEFAULT 0',
+    'ALTER TABLE purchase_invoices ADD COLUMN taxAmount REAL DEFAULT 0',
+    'ALTER TABLE purchase_invoices ADD COLUMN roundOff REAL DEFAULT 0',
+    'ALTER TABLE purchase_invoices ADD COLUMN cashDiscPercent REAL DEFAULT 0',
+    'ALTER TABLE purchase_invoices ADD COLUMN amountPaid REAL DEFAULT 0',
+    'ALTER TABLE purchase_invoices ADD COLUMN dueAmount REAL DEFAULT 0',
+    'ALTER TABLE purchase_invoices ADD COLUMN paymentStatus TEXT DEFAULT "Fully Paid"',
+    'ALTER TABLE purchase_invoices ADD COLUMN paymentMethod TEXT DEFAULT "Cash"',
+    'ALTER TABLE purchase_invoices ADD COLUMN supplierDrugLicense TEXT',
   ];
   for (const sql of purchaseCols) {
     try { await dbRun(sql); } catch (e) { /* column already exists */ }

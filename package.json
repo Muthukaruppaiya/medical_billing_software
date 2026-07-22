@@ -1,7 +1,7 @@
 {
   "name": "pharmacy-billing",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.4",
   "type": "module",
   "main": "electron/main.cjs",
   "author": "Pharmacy Billing",
@@ -55,12 +55,13 @@
   "build": {
     "appId": "com.pharmacy.billing",
     "productName": "Pharmacy Billing",
-    "asar": true,
+    "asar": false,
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
     "asarUnpack": [
       "**/*.node",
-      "node_modules/sqlite3/**"
+      "node_modules/sqlite3/**",
+      "server/**"
     ],
     "files": [
       "electron/**/*",

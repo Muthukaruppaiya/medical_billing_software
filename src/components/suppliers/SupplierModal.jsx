@@ -7,6 +7,7 @@ const emptySupplier = {
   gstin: '',
   pan: '',
   address: '',
+  drugLicense: '',
 };
 
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
@@ -40,6 +41,7 @@ export default function SupplierModal({ supplier, onSave, onClose }) {
     const gstin = form.gstin.trim().toUpperCase();
     const pan = form.pan.trim().toUpperCase();
     const address = form.address.trim();
+    const drugLicense = form.drugLicense.trim();
 
     if (!name) return alert('Supplier name is required');
     if (!address) return alert('Full address is mandatory');
@@ -63,6 +65,7 @@ export default function SupplierModal({ supplier, onSave, onClose }) {
         gstin,
         pan,
         address,
+        drugLicense,
       });
     } catch (error) {
       alert(error.message || 'Failed to save supplier');
@@ -151,6 +154,17 @@ export default function SupplierModal({ supplier, onSave, onClose }) {
               />
               <p className="text-[10px] text-slate-400 mt-1">Auto-filled from GSTIN when possible</p>
             </div>
+          </div>
+
+          <div>
+            <label className="form-label">DL Number (Drug License)</label>
+            <input
+              value={form.drugLicense}
+              onChange={event => set('drugLicense', event.target.value)}
+              className="form-input"
+              placeholder="e.g. 2950/MDU/20B, TN/MDS/20/01981"
+            />
+            <p className="text-[10px] text-slate-400 mt-1">Optional — enter one or more drug license numbers</p>
           </div>
 
           <div className="flex gap-3 pt-2">

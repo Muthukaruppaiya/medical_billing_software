@@ -36,7 +36,13 @@ export default function InvoiceDetailModal({ invoice, onClose }) {
   };
 
   // Calculate totals
-  const subtotal = items.reduce((sum, item) => sum + (item.qty * item.rate), 0);
+  const subtotal = items.reduce((sum, item) => sum + (item.grossAmt ?? (item.qty * item.rate)), 0);
+  const discountTotal = Number(invoice.discount) || items.reduce((sum, item) => {
+    if (item.discAmt != null) return sum + Number(item.discAmt);
+    const gross = item.grossAmt ?? (item.qty * item.rate);
+    const disc = Math.min(100, Math.max(0, Number(item.discPercent) || 0));
+    return sum + (gross * disc) / 100;
+  }, 0);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -125,17 +131,20 @@ export default function InvoiceDetailModal({ invoice, onClose }) {
                       <th className="p-3">Expiry</th>
                       <th className="p-3 text-center">Qty</th>
                       <th className="p-3 text-right">Rate</th>
+                      <th className="p-3 text-right">Disc %</th>
                       <th className="p-3 text-right">Total</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
                     {items.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="p-4 text-center text-slate-400">No items available on this invoice</td>
+                        <td colSpan={9} className="p-4 text-center text-slate-400">No items available on this invoice</td>
                       </tr>
                     ) : (
                       items.map((item, index) => {
-                        const rowTotal = item.qty * item.rate;
+                        const discPercent = Math.min(100, Math.max(0, Number(item.discPercent) || 0));
+                        const gross = item.grossAmt ?? (item.qty * item.rate);
+                        const rowTotal = item.total ?? Math.max(0, gross - (gross * discPercent) / 100);
                         return (
                           <tr key={index}>
                             <td className="p-3 font-medium text-slate-900">{item.product?.name || 'Unknown Product'}</td>
@@ -144,8 +153,9 @@ export default function InvoiceDetailModal({ invoice, onClose }) {
                             <td className="p-3">{item.batch || item.product?.batch || '-'}</td>
                             <td className="p-3">{item.expiry || item.product?.expiry || '-'}</td>
                             <td className="p-3 text-center font-semibold">{item.qty}</td>
-                            <td className="p-3 text-right">₹{item.rate.toFixed(2)}</td>
-                            <td className="p-3 text-right font-medium">₹{Number(item.total ?? rowTotal).toFixed(2)}</td>
+                            <td className="p-3 text-right">₹{Number(item.rate || 0).toFixed(2)}</td>
+                            <td className="p-3 text-right">{discPercent ? `${discPercent}%` : '—'}</td>
+                            <td className="p-3 text-right font-medium">₹{Number(rowTotal).toFixed(2)}</td>
                           </tr>
                         );
                       })
@@ -162,15 +172,15 @@ export default function InvoiceDetailModal({ invoice, onClose }) {
                   <span>Subtotal</span>
                   <span>₹{subtotal.toFixed(2)}</span>
                 </div>
-                {invoice.discount > 0 && (
+                {discountTotal > 0 && (
                   <div className="flex justify-between text-danger font-medium">
                     <span>Discount</span>
-                    <span>-₹{Number(invoice.discount).toFixed(2)}</span>
+                    <span>-₹{Number(discountTotal).toFixed(2)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-base font-bold text-slate-800 border-t border-slate-200 pt-2">
                   <span>Grand Total</span>
-                  <span className="text-primary-600">₹{Number(invoice.amount || subtotal).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                  <span className="text-primary-600">₹{Number(invoice.amount || Math.max(0, subtotal - discountTotal)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                 </div>
               </div>
             </div>

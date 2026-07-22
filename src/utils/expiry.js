@@ -92,9 +92,9 @@ export function currentYearShort() {
 }
 
 export function yearOptions(span = 15) {
-  const start = new Date().getFullYear();
+  const start = new Date().getFullYear() - 2;
   const years = [];
-  for (let i = 0; i <= span; i += 1) {
+  for (let i = 0; i <= span + 2; i += 1) {
     years.push(String(start + i).slice(-2));
   }
   return years;

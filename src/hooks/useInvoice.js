@@ -2,32 +2,45 @@ import { useMemo } from 'react';
 
 /**
  * Calculates invoice totals from cart items.
- * Each item: { product, qty, rate, cgst, sgst }
+ * Each item: { product, qty, rate, discPercent?, cgst, sgst }
  *
- * TAX TEMPORARILY DISABLED — grandTotal = subtotal only.
- * To re-enable: remove the three override lines marked with // TAX DISABLED
+ * TAX TEMPORARILY DISABLED — grandTotal = subtotal − line discounts.
+ * To re-enable: restore tax on (optionally) post-discount line amounts.
  */
 export function useInvoice(cartItems) {
   return useMemo(() => {
     const rows = cartItems.map(item => {
-      const qty  = Number(item.qty)  || 0;
+      const qty = Number(item.qty) || 0;
       const rate = Number(item.rate) || 0;
+      const discPercent = Math.min(100, Math.max(0, Number(item.discPercent) || 0));
 
-      const lineAmt = qty * rate;
-      const cgstAmt = 0;   // TAX DISABLED
-      const sgstAmt = 0;   // TAX DISABLED
-      const total   = lineAmt; // TAX DISABLED — was: lineAmt + cgstAmt + sgstAmt
+      const grossAmt = qty * rate;
+      const discAmt = (grossAmt * discPercent) / 100;
+      const lineAmt = Math.max(0, grossAmt - discAmt);
+      const cgstAmt = 0; // TAX DISABLED
+      const sgstAmt = 0; // TAX DISABLED
+      const total = lineAmt; // TAX DISABLED — was: lineAmt + cgstAmt + sgstAmt
 
-      return { ...item, lineAmt, cgstAmt, sgstAmt, total };
+      return {
+        ...item,
+        discPercent,
+        grossAmt,
+        discAmt,
+        lineAmt,
+        cgstAmt,
+        sgstAmt,
+        total,
+      };
     });
 
-    const subtotal   = rows.reduce((s, r) => s + r.lineAmt, 0);
-    const totalCgst  = 0; // TAX DISABLED
-    const totalSgst  = 0; // TAX DISABLED
-    const totalTax   = 0; // TAX DISABLED
-    const grandTotal = subtotal;
+    const subtotal = rows.reduce((s, r) => s + r.grossAmt, 0);
+    const totalDiscount = rows.reduce((s, r) => s + r.discAmt, 0);
+    const totalCgst = 0; // TAX DISABLED
+    const totalSgst = 0; // TAX DISABLED
+    const totalTax = 0; // TAX DISABLED
+    const grandTotal = Math.max(0, subtotal - totalDiscount);
 
-    return { rows, subtotal, totalCgst, totalSgst, totalTax, grandTotal };
+    return { rows, subtotal, totalDiscount, totalCgst, totalSgst, totalTax, grandTotal };
   }, [cartItems]);
 }
 

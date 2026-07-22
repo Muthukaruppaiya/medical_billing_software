@@ -25,6 +25,7 @@ const buildBulkRow = (product, existing) => {
         ? Math.min(Number(existing.qty) || 0, Number(batch.stock))
         : Number(existing.qty) || 0,
       rate: batch?.rate ?? existing.rate ?? product.rate,
+      discPercent: Number(existing.discPercent) || 0,
     };
   }
 
@@ -36,6 +37,7 @@ const buildBulkRow = (product, existing) => {
     maxStock: firstBatch ? Number(firstBatch.stock) : 0,
     qty: 0,
     rate: firstBatch?.rate ?? product.rate,
+    discPercent: 0,
   };
 };
 
@@ -47,11 +49,9 @@ export default function NewSale() {
   const [bulkDate, setBulkDate] = useState(dayjs().format('YYYY-MM-DD'));
   const [remarks, setRemarks] = useState('');
   const [saving, setSaving] = useState(false);
-  const [bulkDiscount, setBulkDiscount] = useState(0);
-  const [bulkDiscountType, setBulkDiscountType] = useState('%');
 
   // Consolidated Items List
-  const [bulkItems, setBulkItems] = useState([]); // Array of { product, qty, rate }
+  const [bulkItems, setBulkItems] = useState([]); // Array of { product, qty, rate, discPercent }
   
   // Search dropdown states
   const [prodQuery, setProdQuery] = useState('');
@@ -133,20 +133,30 @@ export default function NewSale() {
     setBulkItems(updated);
   };
 
+  const updateBulkDisc = (index, val) => {
+    const updated = [...bulkItems];
+    updated[index].discPercent = Math.min(100, Math.max(0, Number(val) || 0));
+    setBulkItems(updated);
+  };
+
   const removeBulkItem = (index) => {
     setBulkItems(prev => prev.filter((_, i) => i !== index));
   };
 
+  const lineNet = (item) => {
+    const gross = Number(item.qty) * Number(item.rate);
+    const disc = Math.min(100, Math.max(0, Number(item.discPercent) || 0));
+    return Math.max(0, gross - (gross * disc) / 100);
+  };
+
   // Grand total of the consolidated entry
   const soldItems = bulkItems.filter(item => Number(item.qty) > 0);
-  const totalAmount = soldItems.reduce((sum, item) => sum + (item.qty * item.rate), 0);
-  const bulkDiscountValue = Number(bulkDiscount) || 0;
-  const bulkDiscountAmount = Math.min(
-    totalAmount,
-    bulkDiscountType === '%'
-      ? (totalAmount * bulkDiscountValue) / 100
-      : bulkDiscountValue
-  );
+  const totalAmount = soldItems.reduce((sum, item) => sum + Number(item.qty) * Number(item.rate), 0);
+  const bulkDiscountAmount = soldItems.reduce((sum, item) => {
+    const gross = Number(item.qty) * Number(item.rate);
+    const disc = Math.min(100, Math.max(0, Number(item.discPercent) || 0));
+    return sum + (gross * disc) / 100;
+  }, 0);
   const finalBulkAmount = Math.max(0, totalAmount - bulkDiscountAmount);
 
   const handleBulkSubmit = async (e) => {
@@ -173,17 +183,25 @@ export default function NewSale() {
         tax: 0,
         status: 'Paid',
         type: 'sale',
-        items: soldItems.map(item => ({
-          product: { id: item.product.id, name: item.product.name },
-          batchId: item.batchId,
-          batch: item.batch,
-          expiry: item.expiry,
-          qty: item.qty,
-          rate: item.rate,
-          cgst: 0,
-          sgst: 0,
-          total: item.qty * item.rate
-        })),
+        items: soldItems.map(item => {
+          const discPercent = Math.min(100, Math.max(0, Number(item.discPercent) || 0));
+          const gross = item.qty * item.rate;
+          const discAmt = (gross * discPercent) / 100;
+          return {
+            product: { id: item.product.id, name: item.product.name },
+            batchId: item.batchId,
+            batch: item.batch,
+            expiry: item.expiry,
+            qty: item.qty,
+            rate: item.rate,
+            discPercent,
+            discAmt,
+            grossAmt: gross,
+            cgst: 0,
+            sgst: 0,
+            total: Math.max(0, gross - discAmt),
+          };
+        }),
         gstin: '',
         discount: bulkDiscountAmount,
       };
@@ -192,8 +210,6 @@ export default function NewSale() {
       alert(`Consolidated Sales Entry of ₹${finalBulkAmount.toFixed(2)} saved successfully! (Inventory updated)`);
       setBulkItems(consolidatedProducts.map(product => buildBulkRow(product)));
       setRemarks('');
-      setBulkDiscount(0);
-      setBulkDiscountType('%');
     } catch (err) {
       console.error(err);
       alert('Failed to save consolidation');
@@ -206,25 +222,24 @@ export default function NewSale() {
   return (
     <div className="space-y-6">
       {/* Selector Tabs */}
-      <div className="flex gap-2 bg-slate-100 p-1.5 rounded-xl w-fit border border-slate-200">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">New Sale</h1>
+          <p className="page-subtitle">Standard billing or consolidated OTC daily entry</p>
+        </div>
+        <span className="badge badge-info">v2.0</span>
+      </div>
+      <div className="mode-tabs">
         <button
           onClick={() => setActiveTab('standard')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
-            activeTab === 'standard'
-              ? 'bg-white text-primary-600 shadow-sm'
-              : 'text-slate-600 hover:text-slate-800'
-          }`}
+          className={`mode-tab ${activeTab === 'standard' ? 'active' : ''}`}
         >
           <ShoppingCart className="w-4 h-4" />
           Standard Bill
         </button>
         <button
           onClick={() => setActiveTab('bulk')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
-            activeTab === 'bulk'
-              ? 'bg-white text-primary-600 shadow-sm'
-              : 'text-slate-600 hover:text-slate-800'
-          }`}
+          className={`mode-tab ${activeTab === 'bulk' ? 'active' : ''}`}
         >
           <Coffee className="w-4 h-4" />
           Consolidated Sale (Small Sales)
@@ -319,6 +334,7 @@ export default function NewSale() {
                       <th>Batch / Expiry</th>
                       <th>Qty Sold</th>
                       <th>Rate</th>
+                      <th>Disc %</th>
                       <th>Total</th>
                       <th></th>
                     </tr>
@@ -326,7 +342,7 @@ export default function NewSale() {
                   <tbody>
                     {bulkItems.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="text-center py-8 text-slate-400 text-xs">
+                        <td colSpan={7} className="text-center py-8 text-slate-400 text-xs">
                           {consolidatedProducts.length === 0
                             ? 'No products configured. Select them under Backup & Settings → Consolidated Sale Products.'
                             : 'Loading product list...'}
@@ -373,8 +389,23 @@ export default function NewSale() {
                               className="form-input text-xs py-1"
                             />
                           </td>
+                          <td className="w-20">
+                            <div className="relative">
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.01"
+                                value={item.discPercent || ''}
+                                onChange={e => updateBulkDisc(idx, e.target.value)}
+                                placeholder="0"
+                                className="form-input text-xs py-1 pr-5"
+                              />
+                              <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">%</span>
+                            </div>
+                          </td>
                           <td className="text-xs font-semibold text-slate-700">
-                            ₹{(item.qty * item.rate).toFixed(2)}
+                            ₹{lineNet(item).toFixed(2)}
                           </td>
                           <td>
                             <button
@@ -411,9 +442,7 @@ export default function NewSale() {
                 </div>
                 {bulkDiscountAmount > 0 && (
                   <div className="flex justify-between items-center text-danger">
-                    <span>
-                      Discount ({bulkDiscountType === '%' ? `${bulkDiscountValue}%` : 'Fixed'}):
-                    </span>
+                    <span>Line Discount:</span>
                     <span className="font-semibold">-₹{bulkDiscountAmount.toFixed(2)}</span>
                   </div>
                 )}
@@ -427,44 +456,6 @@ export default function NewSale() {
               <div className="h-px bg-slate-100" />
 
               <form onSubmit={handleBulkSubmit} className="space-y-4">
-                <div>
-                  <label className="form-label">Apply Discount</label>
-                  <div className="flex gap-2">
-                    <div className="flex rounded-lg border border-surface-border overflow-hidden bg-white">
-                      <button
-                        type="button"
-                        onClick={() => setBulkDiscountType('%')}
-                        className={`px-3 text-xs font-bold transition-colors ${
-                          bulkDiscountType === '%'
-                            ? 'bg-primary-500 text-white'
-                            : 'text-slate-500 hover:bg-slate-50'
-                        }`}
-                      >
-                        %
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setBulkDiscountType('₹')}
-                        className={`px-3 text-xs font-bold transition-colors ${
-                          bulkDiscountType === '₹'
-                            ? 'bg-primary-500 text-white'
-                            : 'text-slate-500 hover:bg-slate-50'
-                        }`}
-                      >
-                        ₹
-                      </button>
-                    </div>
-                    <input
-                      type="number"
-                      min="0"
-                      value={bulkDiscount || ''}
-                      onChange={event => setBulkDiscount(Math.max(0, Number(event.target.value)))}
-                      placeholder={bulkDiscountType === '%' ? 'e.g. 10' : 'e.g. 50'}
-                      className="form-input text-sm flex-1"
-                    />
-                  </div>
-                </div>
-
                 <div>
                   <label className="form-label">Sale Date</label>
                   <input

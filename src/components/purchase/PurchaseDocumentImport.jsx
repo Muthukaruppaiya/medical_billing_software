@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Upload, FileImage, Loader2, Plus, Trash2, Save, AlertTriangle, CheckCircle,
+  Columns3, Eye, ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
-import * as pdfjs from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import '../../utils/pdfJsCompat';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import { useApp } from '../../context/AppContext';
 import { nextDocumentNo } from '../../hooks/useInvoice';
 import ExpiryInput from '../ui/ExpiryInput';
+import PrintPurchaseModal from './PrintPurchaseModal';
 import { normalizeExpiry } from '../../utils/expiry';
+import { calcPurchaseLine, calcPurchaseSummary, round2 } from '../../utils/money';
+import { PAYMENT_METHODS } from '../billing/InvoiceSummary';
 import dayjs from 'dayjs';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -39,26 +44,35 @@ const emptyRow = () => ({
 
 /** Invoice column headers — match distributor bill layout. */
 const COLUMN_FIELDS = [
-  { key: 'manufacturer', label: 'MFR', width: 'w-20' },
-  { key: 'rack', label: 'RACK', width: 'w-20' },
+  { key: 'manufacturer', label: 'MFR', width: 'w-14' },
+  { key: 'rack', label: 'RACK', width: 'w-14' },
   { key: 'batch', label: 'BATCH', width: 'w-28' },
-  { key: 'expiry', label: 'EXP', width: 'w-28', expiry: true },
-  { key: 'hsn', label: 'HSN', width: 'w-24' },
-  { key: 'name', label: 'PRODUCT NAME', width: 'w-56' },
-  { key: 'pack', label: 'PACK', width: 'w-20' },
-  { key: 'mrp', label: 'MRP', width: 'w-24', numeric: true },
-  { key: 'qty', label: 'QTY', width: 'w-16', numeric: true },
-  { key: 'free', label: 'FREE', width: 'w-16', numeric: true },
-  { key: 'rate', label: 'RATE', width: 'w-24', numeric: true },
-  { key: 'oldMrp', label: 'Old MRP', width: 'w-24', numeric: true },
-  { key: 'discount', label: 'Disc%', width: 'w-20', numeric: true },
-  { key: 'value', label: 'Amount', width: 'w-24', numeric: true },
-  { key: 'tax', label: 'GST%', width: 'w-16', numeric: true },
+  { key: 'expiry', label: 'EXP', width: 'w-[5.75rem]', expiry: true },
+  { key: 'hsn', label: 'HSN', width: 'w-20' },
+  { key: 'name', label: 'PRODUCT', width: 'w-44' },
+  { key: 'pack', label: 'PACK', width: 'w-14' },
+  { key: 'mrp', label: 'MRP', width: 'w-16', numeric: true },
+  { key: 'qty', label: 'QTY', width: 'w-14', numeric: true },
+  { key: 'free', label: 'FREE', width: 'w-12', numeric: true },
+  { key: 'rate', label: 'RATE', width: 'w-16', numeric: true },
+  { key: 'oldMrp', label: 'Old MRP', width: 'w-16', numeric: true },
+  { key: 'discount', label: 'Disc%', width: 'w-12', numeric: true },
+  { key: 'value', label: 'Amount', width: 'w-16', numeric: true },
+  { key: 'tax', label: 'GST%', width: 'w-12', numeric: true },
 ];
+
+const REVIEW_PRIORITY = {
+  name: 0, batch: 1, expiry: 2, qty: 3, free: 4, rate: 5, value: 6,
+  discount: 7, tax: 8, mrp: 9, oldMrp: 10, pack: 11, hsn: 12, manufacturer: 13, rack: 14,
+};
 
 const DEFAULT_COLUMN_MAPPING = Object.fromEntries(
   COLUMN_FIELDS.map(field => [field.key, field.key])
 );
+
+const reviewInputClass =
+  'w-full min-w-0 px-1.5 py-1 border border-slate-200 rounded-md text-[11px] leading-tight ' +
+  'text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 focus:border-teal-400';
 
 const SKIP_LINE_RE =
   /PENDING BILLS|ITEM DESCRIPTION|GRAND TOTAL|BANK DETAILS|HAVE A NICE|TAXABLE|SGST|CGST|TOTAL QTY|SALE VALUE|INVOICE NO|BILL NO|PAGE\s*\d|CONTINUED|AUTHORISED|SIGNATURE|TERMS\s*&?\s*CONDITIONS|AMOUNT IN WORDS|ROUND OFF|NET AMOUNT|SUB\s*TOTAL|DISCOUNT AMT|\bMFR\b.*\bBATCH\b.*\bEXP\b|\bPRODUCT NAME\b|\bOld MRP\b/i;
@@ -293,8 +307,24 @@ function textToRows(rawText, confidence = 70) {
       if (last > 0 && last <= 28 && Number.isInteger(last)) {
         tax = last;
         value = secondLast || Number((qty * rate).toFixed(2));
-        const maybeDisc = money[money.length - 3];
-        if (maybeDisc != null && maybeDisc >= 0 && maybeDisc <= 100) discount = maybeDisc;
+        // Disc% only when Amount is reduced vs qty×rate. Never treat rate/qty as Disc%.
+        const gross = Number((qty * rate).toFixed(2));
+        if (Math.abs(gross - value) <= 1.5) {
+          discount = 0;
+        } else {
+          const maybeDisc = money[money.length - 3];
+          if (
+            maybeDisc != null &&
+            maybeDisc > 0 &&
+            maybeDisc <= 40 &&
+            maybeDisc !== rate &&
+            Math.abs(gross * (1 - maybeDisc / 100) - value) <= 1.5
+          ) {
+            discount = maybeDisc;
+          } else {
+            discount = 0;
+          }
+        }
       } else {
         value = last || Number((qty * rate).toFixed(2));
       }
@@ -704,12 +734,31 @@ export default function PurchaseDocumentImport() {
   const [status, setStatus] = useState('');
   const [rawText, setRawText] = useState('');
   const [columnMapping, setColumnMapping] = useState(DEFAULT_COLUMN_MAPPING);
+  const [savedPurchase, setSavedPurchase] = useState(null);
+  const [cashDiscPercent, setCashDiscPercent] = useState(0);
+  const [paymentMode, setPaymentMode] = useState('full'); // full | partial
+  const [amountPaidInput, setAmountPaidInput] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('Cash');
+  const [activeRowIndex, setActiveRowIndex] = useState(0);
+  const [previewPage, setPreviewPage] = useState(0);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [showMapping, setShowMapping] = useState(false);
 
   useEffect(() => () => {
     previews.forEach(preview => {
       if (preview.startsWith('blob:')) URL.revokeObjectURL(preview);
     });
   }, [previews]);
+
+  useEffect(() => {
+    if (!rows.length) {
+      setActiveRowIndex(0);
+      return;
+    }
+    if (activeRowIndex > rows.length - 1) {
+      setActiveRowIndex(rows.length - 1);
+    }
+  }, [rows.length, activeRowIndex]);
 
   const setRow = (index, field, value) => {
     setRows(current =>
@@ -801,6 +850,9 @@ export default function PurchaseDocumentImport() {
       }
 
       setPreviews(sources.map(item => item.preview));
+      setPreviewPage(0);
+      setPreviewZoom(1);
+      setActiveRowIndex(0);
 
       worker = await createWorker('eng', 1, {
         logger: message => {
@@ -854,13 +906,38 @@ export default function PurchaseDocumentImport() {
     [rows, columnMapping]
   );
 
-  const total = useMemo(
-    () => reviewedRows.reduce(
-      (sum, row) => sum + (Number(row.value) || Number(row.qty) * Number(row.rate) || 0),
-      0
-    ),
-    [reviewedRows]
+  const visibleSources = useMemo(() => (
+    COLUMN_FIELDS
+      .filter(field => columnMapping[field.key] !== 'ignore')
+      .sort((a, b) => (
+        (REVIEW_PRIORITY[columnMapping[a.key]] ?? 99)
+        - (REVIEW_PRIORITY[columnMapping[b.key]] ?? 99)
+      ))
+  ), [columnMapping]);
+
+  const sourceForTarget = (targetKey) =>
+    COLUMN_FIELDS.find(field => columnMapping[field.key] === targetKey)?.key;
+
+  const rowIssues = useMemo(() => reviewedRows.map(row => {
+    const issues = [];
+    if (!String(row.name || '').trim()) issues.push('Product name');
+    if (!String(row.batch || '').trim()) issues.push('Batch');
+    if (!(Number(row.qty) > 0)) issues.push('Qty');
+    return issues;
+  }), [reviewedRows]);
+
+  const issueCount = rowIssues.filter(list => list.length > 0).length;
+
+  const summary = useMemo(
+    () => calcPurchaseSummary(reviewedRows, cashDiscPercent),
+    [reviewedRows, cashDiscPercent]
   );
+
+  const amountPaid = paymentMode === 'full'
+    ? summary.netAmount
+    : Math.min(summary.netAmount, Math.max(0, Number(amountPaidInput) || 0));
+  const dueAmount = round2(Math.max(0, summary.netAmount - amountPaid));
+  const paymentStatus = dueAmount <= 0.009 ? 'Fully Paid' : (amountPaid > 0 ? 'Partial' : 'Unpaid');
 
   const savePurchase = async () => {
     if (!selectedSupplier) return alert('Select a supplier');
@@ -877,6 +954,7 @@ export default function PurchaseDocumentImport() {
       const purchaseItems = [];
       const resolvedProducts = [...state.products];
       for (const row of reviewedRows) {
+        const line = calcPurchaseLine(row);
         const expiry = normalizeExpiry(row.expiry) || '';
         let product = resolvedProducts.find(
           item => Number(item.id) === Number(row.matchedProductId)
@@ -894,16 +972,16 @@ export default function PurchaseDocumentImport() {
               packType: 'Others',
               rackLocation: row.rack || '',
               minStock: 0,
-              cgst: Number(row.tax || 0) / 2,
-              sgst: Number(row.tax || 0) / 2,
+              cgst: line.gstPercent / 2,
+              sgst: line.gstPercent / 2,
               batches: [{
                 batch: row.batch.trim(),
                 expiry,
                 stock: 0,
                 mrp: Number(row.mrp || 0),
                 rate: Number(row.rate || 0),
-                cgst: Number(row.tax || 0) / 2,
-                sgst: Number(row.tax || 0) / 2,
+                cgst: line.gstPercent / 2,
+                sgst: line.gstPercent / 2,
               }],
             },
           });
@@ -912,21 +990,25 @@ export default function PurchaseDocumentImport() {
 
         purchaseItems.push({
           product: { id: product.id, name: product.name },
-          qty: Number(row.qty),
+          qty: line.qty,
           free: Number(row.free) || 0,
-          rate: Number(row.rate || 0),
+          rate: line.rate,
           mrp: Number(row.mrp || 0),
           oldMrp: Number(row.oldMrp) || 0,
-          discount: Number(row.discount) || 0,
-          cgst: Number(row.tax || 0) / 2,
-          sgst: Number(row.tax || 0) / 2,
+          discount: line.discPercent,
+          discAmt: line.discAmt,
+          gstPercent: line.gstPercent,
+          gstAmt: line.gstAmt,
+          cgst: line.gstPercent / 2,
+          sgst: line.gstPercent / 2,
           batch: row.batch.trim(),
           expiry,
           rack: row.rack || '',
           manufacturer: row.manufacturer || '',
           pack: row.pack || '',
-          lineAmt: Number(row.qty) * Number(row.rate || 0),
-          total: Number(row.value) || Number(row.qty) * Number(row.rate || 0),
+          lineAmt: line.gross,
+          taxable: line.taxable,
+          total: line.net,
         });
       }
 
@@ -940,7 +1022,6 @@ export default function PurchaseDocumentImport() {
           dataBase64: dataUrl,
         };
       } else if (previews[0] && String(previews[0]).startsWith('data:')) {
-        // Fallback: attach first rendered page preview if original File was lost
         documentPayload = {
           name: 'purchase-document.jpg',
           mime: 'image/jpeg',
@@ -956,7 +1037,21 @@ export default function PurchaseDocumentImport() {
           date: dayjs(billDate).format('DD-MM-YYYY'),
           supplier: selectedSupplier.name,
           supplierId: selectedSupplier.id,
-          amount: total,
+          supplierAddress: selectedSupplier.address || '',
+          supplierPhone: selectedSupplier.phone || '',
+          supplierGstin: selectedSupplier.gstin || '',
+          supplierPan: selectedSupplier.pan || '',
+          supplierDrugLicense: selectedSupplier.drugLicense || '',
+          amount: summary.netAmount,
+          goodsValue: summary.goodsValue,
+          discountAmount: summary.totalDisc,
+          taxAmount: summary.totalGst,
+          roundOff: summary.roundOff,
+          cashDiscPercent: summary.cashDiscPercent,
+          amountPaid,
+          dueAmount,
+          paymentStatus,
+          paymentMethod,
           status: 'Received',
           items: purchaseItems,
           document: documentPayload,
@@ -964,23 +1059,33 @@ export default function PurchaseDocumentImport() {
       });
 
       const attached = Boolean(saved?.hasDocument || saved?.documentName);
-      alert(
-        attached
-          ? `Purchase ${saved.id} saved with document attached.`
-          : `Purchase ${saved.id} saved.${documentPayload ? ' Warning: document was not attached — try re-uploading from purchase details.' : ''}`
-      );
+      if (documentPayload && !attached) {
+        alert(
+          `Purchase ${saved.id} saved, but the document could not be attached — you can attach it from purchase details.`
+        );
+      }
+      setSavedPurchase(saved);
       setRows([]);
       setFiles([]);
       setPreviews([]);
       setRawText('');
       setBillNumber('');
       setStatus('');
+      setCashDiscPercent(0);
+      setPaymentMode('full');
+      setAmountPaidInput('');
+      setPaymentMethod('Cash');
       setColumnMapping(DEFAULT_COLUMN_MAPPING);
     } catch (error) {
       alert(error.message || 'Failed to save reviewed purchase');
     } finally {
       setSaving(false);
     }
+  };
+
+  const resetAfterSave = () => {
+    setSavedPurchase(null);
+    setSupplierId('');
   };
 
   return (
@@ -1061,7 +1166,7 @@ export default function PurchaseDocumentImport() {
         </div>
       )}
 
-      {previews.length > 0 && (
+      {previews.length > 0 && !(rows.length > 0 || rawText) && (
         <div className="card">
           <h3 className="font-semibold text-slate-700 text-sm mb-3">
             Document Preview ({previews.length} page{previews.length > 1 ? 's' : ''})
@@ -1118,153 +1223,354 @@ export default function PurchaseDocumentImport() {
                 />
               </div>
             </div>
+            {selectedSupplier && (
+              <div className="rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-xs text-teal-800 space-y-1">
+                <p className="font-semibold text-sm text-teal-900">Seller / Supplier Details</p>
+                {selectedSupplier.address && (
+                  <p className="whitespace-pre-line">{selectedSupplier.address}</p>
+                )}
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {selectedSupplier.phone && <span>Phone: {selectedSupplier.phone}</span>}
+                  {selectedSupplier.gstin && <span>GSTIN: {selectedSupplier.gstin}</span>}
+                  {selectedSupplier.pan && <span>PAN: {selectedSupplier.pan}</span>}
+                  {selectedSupplier.drugLicense && <span>DL: {selectedSupplier.drugLicense}</span>}
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="card p-0 overflow-hidden">
-            <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
-              <div>
-                <h3 className="font-semibold text-slate-700">Map Columns and Review Products</h3>
-                <p className="text-xs text-slate-400">
-                  Use each header dropdown to identify that invoice column. Select “Ignore column” for unwanted data.
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+            {previews.length > 0 && (
+              <div className="xl:col-span-4 card p-0 overflow-hidden xl:sticky xl:top-4">
+                <div className="px-3 py-2.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Eye className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <p className="text-xs font-bold text-slate-700 truncate">Invoice Preview</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button type="button" onClick={() => setPreviewZoom(z => Math.max(0.7, Number((z - 0.15).toFixed(2))))} className="p-1 rounded-md hover:bg-white text-slate-500" title="Zoom out">
+                      <ZoomOut className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" onClick={() => setPreviewZoom(z => Math.min(2.2, Number((z + 0.15).toFixed(2))))} className="p-1 rounded-md hover:bg-white text-slate-500" title="Zoom in">
+                      <ZoomIn className="w-3.5 h-3.5" />
+                    </button>
+                    {previews.length > 1 && (
+                      <>
+                        <button type="button" onClick={() => setPreviewPage(p => Math.max(0, p - 1))} disabled={previewPage <= 0} className="p-1 rounded-md hover:bg-white text-slate-500 disabled:opacity-30">
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="text-[10px] font-semibold text-slate-500 px-1">{previewPage + 1}/{previews.length}</span>
+                        <button type="button" onClick={() => setPreviewPage(p => Math.min(previews.length - 1, p + 1))} disabled={previewPage >= previews.length - 1} className="p-1 rounded-md hover:bg-white text-slate-500 disabled:opacity-30">
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="bg-slate-100/80 max-h-[70vh] overflow-auto p-2">
+                  <img
+                    src={previews[Math.min(previewPage, previews.length - 1)]}
+                    alt={`Invoice page ${previewPage + 1}`}
+                    className="mx-auto rounded border border-slate-200 bg-white shadow-sm origin-top"
+                    style={{ width: `${previewZoom * 100}%`, maxWidth: 'none' }}
+                  />
+                </div>
+                <p className="px-3 py-2 text-[10px] text-slate-400 border-t border-slate-100">
+                  Compare each row with this bill. Click a table row to edit it below.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setRows(current => [...current, emptyRow()])}
-                className="btn-secondary text-xs gap-1"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Add Row
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="data-table min-w-[2100px]">
-                <thead>
-                  <tr>
-                    <th>Match / Create</th>
-                    {COLUMN_FIELDS.map(source => (
-                      <th key={source.key} className="min-w-36">
-                        <select
-                          value={columnMapping[source.key]}
-                          onChange={event => changeColumnMapping(source.key, event.target.value)}
-                          className="form-select min-w-32 bg-white text-xs font-semibold"
-                          title={`Choose what the values in this column mean (detected as ${source.label})`}
-                        >
-                          <option value="ignore">Ignore column</option>
-                          {COLUMN_FIELDS.map(target => (
-                            <option key={target.key} value={target.key}>
-                              {target.label}
-                            </option>
-                          ))}
-                        </select>
-                      </th>
-                    ))}
-                    <th>OCR</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, index) => (
-                    <tr key={index}>
-                      <td className="min-w-52">
-                        <select
-                          value={
-                            row.matchedProductId ||
-                            matchProduct(reviewedRows[index], state.products)?.id ||
-                            ''
-                          }
-                          onChange={event => {
-                            const value = event.target.value;
-                            const product = state.products.find(
-                              item => Number(item.id) === Number(value)
-                            );
-                            const nameSource = COLUMN_FIELDS.find(
-                              field => columnMapping[field.key] === 'name'
-                            )?.key;
-                            const hsnSource = COLUMN_FIELDS.find(
-                              field => columnMapping[field.key] === 'hsn'
-                            )?.key;
-                            setRows(current => current.map((item, rowIndex) =>
-                              rowIndex === index
-                                ? {
-                                    ...item,
-                                    matchedProductId: value,
-                                    ...(nameSource
-                                      ? { [nameSource]: product?.name || item[nameSource] }
-                                      : {}),
-                                    ...(hsnSource
-                                      ? { [hsnSource]: product?.hsn || item[hsnSource] }
-                                      : {}),
-                                  }
-                                : item
-                            ));
-                          }}
-                          className="form-select text-xs"
-                        >
-                          <option value="">Create new product</option>
-                          {state.products.map(product => (
-                            <option key={product.id} value={product.id}>
-                              {product.name}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      {COLUMN_FIELDS.map(source => {
-                        const targetKey = columnMapping[source.key];
-                        const target = COLUMN_FIELDS.find(field => field.key === targetKey);
-                        if (target?.expiry || source.key === 'expiry') {
+            )}
+
+            <div className={`${previews.length > 0 ? 'xl:col-span-8' : 'xl:col-span-12'} space-y-3`}>
+              <div className="card p-0 overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-white">
+                  <div>
+                    <h3 className="font-semibold text-slate-800 text-sm">Review Detected Products</h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {rows.length} row{rows.length !== 1 ? 's' : ''}
+                      {issueCount > 0 ? (
+                        <span className="text-amber-600 font-semibold"> · {issueCount} need attention</span>
+                      ) : (
+                        <span className="text-emerald-600 font-semibold"> · all required fields filled</span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setShowMapping(v => !v)} className={`btn-secondary text-xs gap-1 py-1.5 ${showMapping ? 'ring-2 ring-teal-200' : ''}`}>
+                      <Columns3 className="w-3.5 h-3.5" />
+                      {showMapping ? 'Hide Mapping' : 'Column Mapping'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRows(current => [...current, emptyRow()]);
+                        setActiveRowIndex(rows.length);
+                      }}
+                      className="btn-secondary text-xs gap-1 py-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Add Row
+                    </button>
+                  </div>
+                </div>
+
+                {showMapping && (
+                  <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+                    <p className="text-[11px] text-slate-500 mb-2">
+                      If OCR put values in the wrong column, remap here. “Ignore” hides that column from review.
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                      {COLUMN_FIELDS.map(source => (
+                        <label key={source.key} className="text-[10px] font-semibold text-slate-500">
+                          Detected as {source.label}
+                          <select
+                            value={columnMapping[source.key]}
+                            onChange={event => changeColumnMapping(source.key, event.target.value)}
+                            className="form-select mt-1 text-xs py-1.5"
+                          >
+                            <option value="ignore">Ignore column</option>
+                            {COLUMN_FIELDS.map(target => (
+                              <option key={target.key} value={target.key}>{target.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="overflow-auto max-h-[52vh] border-b border-slate-100">
+                  <table className="w-full border-collapse text-[11px]">
+                    <thead className="sticky top-0 z-10 bg-teal-800 text-white shadow-sm">
+                      <tr>
+                        <th className="px-2 py-2 text-left font-bold w-8">#</th>
+                        <th className="px-2 py-2 text-left font-bold min-w-[7rem]">Stock Match</th>
+                        {visibleSources.map(source => {
+                          const target = COLUMN_FIELDS.find(f => f.key === columnMapping[source.key]);
                           return (
-                            <td key={source.key}>
-                              <ExpiryInput
-                                value={row[source.key]}
-                                onChange={value => setRow(index, source.key, value)}
-                                className={`form-input text-xs ${target?.width || 'w-28'} ${
-                                  targetKey === 'ignore' ? 'bg-slate-100 text-slate-400' : ''
-                                }`}
-                              />
-                            </td>
+                            <th key={source.key} className="px-1.5 py-2 text-left font-bold whitespace-nowrap">
+                              {target?.label || source.label}
+                            </th>
                           );
-                        }
+                        })}
+                        <th className="px-2 py-2 text-right font-bold">Tax</th>
+                        <th className="px-1 py-2 w-8" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row, index) => {
+                        const line = summary.lines[index] || calcPurchaseLine(reviewedRows[index] || row);
+                        const issues = rowIssues[index] || [];
+                        const isActive = activeRowIndex === index;
                         return (
-                        <td key={source.key}>
-                          <input
-                            type={target?.numeric ? 'number' : 'text'}
-                            step={target?.numeric ? '0.01' : undefined}
-                            min={target?.numeric ? '0' : undefined}
-                            value={row[source.key]}
-                            onChange={event => setRow(index, source.key, event.target.value)}
-                            className={`form-input text-xs ${target?.width || 'w-28'} ${
-                              targetKey === 'ignore' ? 'bg-slate-100 text-slate-400' : ''
+                          <tr
+                            key={index}
+                            onClick={() => setActiveRowIndex(index)}
+                            className={`cursor-pointer border-b border-slate-100 ${
+                              isActive
+                                ? 'bg-teal-50 ring-1 ring-inset ring-teal-300'
+                                : issues.length
+                                  ? 'bg-amber-50/70 hover:bg-amber-50'
+                                  : index % 2 === 0
+                                    ? 'bg-white hover:bg-slate-50'
+                                    : 'bg-slate-50/60 hover:bg-slate-100'
                             }`}
-                          />
-                        </td>
+                          >
+                            <td className="px-2 py-1 font-bold text-slate-500 align-middle">{index + 1}</td>
+                            <td className="px-1.5 py-1 align-middle" onClick={e => e.stopPropagation()}>
+                              <select
+                                value={
+                                  row.matchedProductId ||
+                                  matchProduct(reviewedRows[index], state.products)?.id ||
+                                  ''
+                                }
+                                onChange={event => {
+                                  const value = event.target.value;
+                                  const product = state.products.find(
+                                    item => Number(item.id) === Number(value)
+                                  );
+                                  const nameSource = sourceForTarget('name');
+                                  const hsnSource = sourceForTarget('hsn');
+                                  setRows(current => current.map((item, rowIndex) =>
+                                    rowIndex === index
+                                      ? {
+                                          ...item,
+                                          matchedProductId: value,
+                                          ...(nameSource ? { [nameSource]: product?.name || item[nameSource] } : {}),
+                                          ...(hsnSource ? { [hsnSource]: product?.hsn || item[hsnSource] } : {}),
+                                        }
+                                      : item
+                                  ));
+                                }}
+                                className={`${reviewInputClass} max-w-[9rem]`}
+                              >
+                                <option value="">+ New product</option>
+                                {state.products.map(product => (
+                                  <option key={product.id} value={product.id}>{product.name}</option>
+                                ))}
+                              </select>
+                            </td>
+                            {visibleSources.map(source => {
+                              const targetKey = columnMapping[source.key];
+                              const target = COLUMN_FIELDS.find(field => field.key === targetKey);
+                              const mapped = reviewedRows[index] || {};
+                              const missing =
+                                (targetKey === 'name' && !String(mapped.name || '').trim())
+                                || (targetKey === 'batch' && !String(mapped.batch || '').trim())
+                                || (targetKey === 'qty' && !(Number(mapped.qty) > 0));
+                              const cellClass = `${reviewInputClass} ${missing ? 'border-amber-400 bg-amber-50' : ''} ${target?.width || ''}`;
+
+                              if (target?.expiry || source.key === 'expiry') {
+                                const displayExp =
+                                  normalizeExpiry(row[source.key]) || String(row[source.key] || '');
+                                return (
+                                  <td key={source.key} className="px-1 py-1 align-middle whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                                    <input
+                                      type="text"
+                                      inputMode="numeric"
+                                      placeholder="MM/YY"
+                                      title="Expiry (MM/YY)"
+                                      value={displayExp}
+                                      onChange={event => {
+                                        const raw = event.target.value;
+                                        const normalized = normalizeExpiry(raw);
+                                        setRow(index, source.key, normalized || raw);
+                                      }}
+                                      onBlur={event => {
+                                        const normalized = normalizeExpiry(event.target.value);
+                                        if (normalized) setRow(index, source.key, normalized);
+                                      }}
+                                      className={`${reviewInputClass} w-[4.75rem] min-w-[4.75rem] text-center font-semibold tracking-wide ${
+                                        missing ? 'border-amber-400 bg-amber-50' : ''
+                                      }`}
+                                    />
+                                  </td>
+                                );
+                              }
+                              return (
+                                <td key={source.key} className="px-1 py-1 align-middle" onClick={e => e.stopPropagation()}>
+                                  <input
+                                    type={target?.numeric ? 'number' : 'text'}
+                                    step={target?.numeric ? '0.01' : undefined}
+                                    min={target?.numeric ? '0' : undefined}
+                                    value={row[source.key]}
+                                    onChange={event => setRow(index, source.key, event.target.value)}
+                                    className={cellClass}
+                                  />
+                                </td>
+                              );
+                            })}
+                            <td className="px-1.5 py-1 text-right font-semibold text-slate-700 whitespace-nowrap align-middle">
+                              ₹{line.gstAmt.toFixed(2)}
+                            </td>
+                            <td className="px-1 py-1 align-middle" onClick={e => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRows(current => current.filter((_, i) => i !== index));
+                                  setActiveRowIndex(i => (i >= index && i > 0 ? i - 1 : i));
+                                }}
+                                className="text-slate-400 hover:text-danger p-1"
+                                title="Remove row"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
                         );
                       })}
-                      <td>
-                        <span className={`badge ${
-                          row.confidence >= 80 ? 'badge-success' :
-                          row.confidence >= 60 ? 'badge-warning' : 'badge-danger'
-                        }`}>
-                          {row.confidence}%
-                        </span>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          onClick={() => setRows(current => current.filter((_, i) => i !== index))}
-                          className="text-slate-400 hover:text-danger p-1"
-                        >
-                          <Trash2 className="w-4 h-4" />
+                    </tbody>
+                  </table>
+                </div>
+
+                {rows.length > 0 && (() => {
+                  const idx = Math.min(activeRowIndex, rows.length - 1);
+                  const mapped = reviewedRows[idx] || emptyRow();
+                  const issues = rowIssues[idx] || [];
+                  const editMapped = (targetKey, value) => {
+                    const source = sourceForTarget(targetKey);
+                    if (!source) return;
+                    setRow(idx, source, value);
+                  };
+                  return (
+                    <div className="px-4 py-3 bg-teal-50/40 border-t border-teal-100">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <p className="text-xs font-bold text-teal-900">
+                          Editing row {idx + 1}{mapped.name ? ` · ${mapped.name}` : ''}
+                        </p>
+                        {issues.length > 0 ? (
+                          <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
+                            Fix: {issues.join(', ')}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                            Ready
+                          </span>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide col-span-2">
+                          Product
+                          <input value={mapped.name || ''} onChange={e => editMapped('name', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Batch
+                          <input value={mapped.batch || ''} onChange={e => editMapped('batch', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Exp
+                          <ExpiryInput value={mapped.expiry || ''} onChange={value => editMapped('expiry', value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Qty
+                          <input type="number" min="0" value={mapped.qty ?? ''} onChange={e => editMapped('qty', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Rate
+                          <input type="number" min="0" step="0.01" value={mapped.rate ?? ''} onChange={e => editMapped('rate', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Amount
+                          <input type="number" min="0" step="0.01" value={mapped.value ?? ''} onChange={e => editMapped('value', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          MRP
+                          <input type="number" min="0" step="0.01" value={mapped.mrp ?? ''} onChange={e => editMapped('mrp', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Disc%
+                          <input type="number" min="0" step="0.01" value={mapped.discount ?? ''} onChange={e => editMapped('discount', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          GST%
+                          <input type="number" min="0" step="0.01" value={mapped.tax ?? ''} onChange={e => editMapped('tax', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          HSN
+                          <input value={mapped.hsn || ''} onChange={e => editMapped('hsn', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Free
+                          <input type="number" min="0" value={mapped.free ?? ''} onChange={e => editMapped('free', e.target.value)} className="form-input mt-1 text-xs py-1.5" />
+                        </label>
+                      </div>
+                      <div className="flex justify-between mt-3">
+                        <button type="button" disabled={idx <= 0} onClick={() => setActiveRowIndex(idx - 1)} className="btn-secondary text-xs py-1.5 px-3 disabled:opacity-40">
+                          ← Prev row
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <button type="button" disabled={idx >= rows.length - 1} onClick={() => setActiveRowIndex(idx + 1)} className="btn-secondary text-xs py-1.5 px-3 disabled:opacity-40">
+                          Next row →
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
           </div>
 
           <details className="card">
+
             <summary className="text-sm font-semibold text-slate-600 cursor-pointer">
               View Raw OCR Text
             </summary>
@@ -1273,26 +1579,165 @@ export default function PurchaseDocumentImport() {
             </pre>
           </details>
 
-          <div className="card flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-xs text-slate-400">Reviewed Purchase Total</p>
-              <p className="text-2xl font-bold text-primary-600">
-                ₹{total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-              </p>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="card space-y-3">
+              <p className="text-sm font-bold text-slate-800">Bill Summary</p>
+              <div className="rounded-xl border border-slate-200 overflow-hidden text-sm">
+                <div className="flex justify-between px-4 py-2 bg-slate-50 border-b border-slate-100">
+                  <span className="text-slate-600">Goods Value</span>
+                  <span className="font-semibold">{summary.goodsValue.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between px-4 py-2 border-b border-slate-100">
+                  <span className="text-slate-600">
+                    C.Disc % {summary.cashDiscPercent || 0}
+                    {summary.lineDisc > 0 ? ' + line Disc%' : ''}
+                  </span>
+                  <span className="font-semibold text-danger">-{summary.totalDisc.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between px-4 py-2 border-b border-slate-100">
+                  <span className="text-slate-600">Total Disc</span>
+                  <span className="font-semibold">{summary.totalDisc.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between px-4 py-2 border-b border-slate-100">
+                  <span className="text-slate-600">GST (Tax Amt)</span>
+                  <span className="font-semibold text-primary-700">{summary.totalGst.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between px-4 py-2 border-b border-slate-100">
+                  <span className="text-slate-600">Rounded off</span>
+                  <span className="font-semibold">{summary.roundOff.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between px-4 py-3 bg-teal-50 border-t-2 border-teal-600">
+                  <span className="font-extrabold text-slate-800">NET AMOUNT</span>
+                  <span className="font-extrabold text-teal-700 text-lg">
+                    {summary.netAmount.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="form-label">Cash Discount % (bill level)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={cashDiscPercent || ''}
+                  onChange={e => setCashDiscPercent(Math.max(0, Number(e.target.value) || 0))}
+                  placeholder="e.g. 4"
+                  className="form-input w-40"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  C.Disc % is on Goods Value (floor): 5141.66 × 4% = 205.66. GST is on taxable after C.Disc (4936 × 5% = 246.80). Net rounds to ₹5183.
+                </p>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={savePurchase}
-              disabled={saving || !rows.length}
-              className="btn-success gap-2 px-6 disabled:opacity-50"
-            >
-              {saving
-                ? <Loader2 className="w-4 h-4 animate-spin" />
-                : <Save className="w-4 h-4" />}
-              {saving ? 'Saving Purchase...' : 'Save Reviewed Purchase'}
-            </button>
+
+            <div className="card space-y-4">
+              <p className="text-sm font-bold text-slate-800">Mode of Payment</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setPaymentMode('full'); setAmountPaidInput(''); }}
+                  className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition-colors ${
+                    paymentMode === 'full'
+                      ? 'bg-primary-500 text-white border-primary-500'
+                      : 'bg-white text-slate-600 border-surface-border hover:bg-slate-50'
+                  }`}
+                >
+                  Fully Paid
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMode('partial');
+                    setAmountPaidInput(String(summary.netAmount));
+                  }}
+                  className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition-colors ${
+                    paymentMode === 'partial'
+                      ? 'bg-amber-500 text-white border-amber-500'
+                      : 'bg-white text-slate-600 border-surface-border hover:bg-slate-50'
+                  }`}
+                >
+                  Partial / Due
+                </button>
+              </div>
+
+              <div>
+                <label className="form-label">Payment Method</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {PAYMENT_METHODS.map(method => (
+                    <button
+                      key={method}
+                      type="button"
+                      onClick={() => setPaymentMethod(method)}
+                      className={`py-2 px-1 rounded-lg text-[11px] font-bold border transition-colors ${
+                        paymentMethod === method
+                          ? 'bg-slate-800 text-white border-slate-800'
+                          : 'bg-white text-slate-600 border-surface-border hover:bg-slate-50'
+                      }`}
+                    >
+                      {method}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {paymentMode === 'partial' && (
+                <div>
+                  <label className="form-label">Amount Paid Now (₹)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max={summary.netAmount}
+                    step="0.01"
+                    value={amountPaidInput}
+                    onChange={e => setAmountPaidInput(e.target.value)}
+                    className="form-input"
+                  />
+                </div>
+              )}
+
+              <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-sm space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Paid</span>
+                  <span className="font-semibold">₹{amountPaid.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Due</span>
+                  <span className={`font-bold ${dueAmount > 0 ? 'text-danger' : 'text-success'}`}>
+                    ₹{dueAmount.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between pt-1 border-t border-slate-200">
+                  <span className="text-slate-500">Status</span>
+                  <span className="font-semibold text-slate-800">
+                    {paymentMethod} · {paymentStatus}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={savePurchase}
+                disabled={saving || !rows.length}
+                className="btn-success w-full justify-center gap-2 py-3 disabled:opacity-50"
+              >
+                {saving
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <Save className="w-4 h-4" />}
+                {saving ? 'Saving Purchase...' : 'Save Reviewed Purchase'}
+              </button>
+            </div>
           </div>
         </>
+      )}
+
+      {savedPurchase && (
+        <PrintPurchaseModal
+          purchase={savedPurchase}
+          onClose={resetAfterSave}
+          onNewPurchase={resetAfterSave}
+        />
       )}
     </div>
   );

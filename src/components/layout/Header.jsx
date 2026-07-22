@@ -39,9 +39,9 @@ export default function Header() {
   const notifCount = lowStockList.length + outStockList.length + expiringList.length;
 
   return (
-    <header className="h-14 bg-white border-b border-surface-border px-6 flex items-center justify-between flex-shrink-0 z-30">
+    <header className="h-15 min-h-[3.75rem] bg-white/90 backdrop-blur border-b border-surface-border px-6 flex items-center justify-between flex-shrink-0 z-30 shadow-sm">
       {/* Left: date */}
-      <div className="text-sm text-slate-500 font-medium hidden md:block">
+      <div className="text-sm text-slate-500 font-semibold hidden md:block">
         {dayjs().format('ddd, DD MMM YYYY')} &nbsp;·&nbsp; {dayjs().format('hh:mm A')}
       </div>
 

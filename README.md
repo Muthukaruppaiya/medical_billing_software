@@ -2,6 +2,8 @@
 
 Local pharmacy billing software (React + Express + SQLite).
 
+**Current release: v2.0.0** — per-line sale discounts, purchase success popup + print, seller details on purchase documents, refreshed UI.
+
 ## Desktop app (.exe installer) — recommended for clients
 
 The project can be packaged as a standalone Windows desktop app with **Electron**. This produces a single
@@ -14,7 +16,7 @@ npm install
 npm run dist
 ```
 
-Output: `release\PharmacyBilling-Setup-<version>.exe`
+Output: `release\PharmacyBilling-Setup-2.0.0.exe`
 
 Give that one `.exe` file to the client.
 

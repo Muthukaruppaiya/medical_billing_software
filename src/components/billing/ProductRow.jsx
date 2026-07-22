@@ -2,8 +2,10 @@ import { Minus, Plus, Trash2 } from 'lucide-react';
 import { formatExpiry, isExpiryValid } from '../../utils/expiry';
 
 export default function ProductRow({ row, index, onUpdate, onRemove }) {
-  const { product, qty, rate, batchId, batch, expiry, maxStock } = row;
-  const total = qty * rate; // TAX DISABLED
+  const { product, qty, rate, discPercent = 0, batchId, batch, expiry, maxStock } = row;
+  const disc = Math.min(100, Math.max(0, Number(discPercent) || 0));
+  const gross = qty * rate;
+  const total = Math.max(0, gross - (gross * disc) / 100);
 
   const set = (field, val) => onUpdate(index, { ...row, [field]: val });
   const selectBatch = (value) => {
@@ -93,8 +95,22 @@ export default function ProductRow({ row, index, onUpdate, onRemove }) {
         </div>
       </td>
 
-      {/* Tax (CGST / SGST) — TEMPORARILY HIDDEN */}
-      {/* <td className="px-3 py-2"> ... </td> */}
+      {/* Disc % */}
+      <td className="px-3 py-2">
+        <div className="relative">
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step="0.01"
+            value={discPercent || ''}
+            onChange={e => set('discPercent', Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
+            placeholder="0"
+            className="form-input pr-6 w-20 text-sm"
+          />
+          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">%</span>
+        </div>
+      </td>
 
       {/* Total */}
       <td className="px-3 py-2 font-semibold text-slate-800">

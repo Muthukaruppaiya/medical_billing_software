@@ -8,15 +8,21 @@ export default function NewPurchase() {
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-2 bg-slate-100 p-1.5 rounded-xl w-fit border border-slate-200">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">New Purchase</h1>
+          <p className="page-subtitle">
+            Record supplier stock manually or upload a purchase bill for review
+          </p>
+        </div>
+        <span className="badge badge-info">v2.0</span>
+      </div>
+
+      <div className="mode-tabs">
         <button
           type="button"
           onClick={() => setMode('manual')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
-            mode === 'manual'
-              ? 'bg-white text-primary-600 shadow-sm'
-              : 'text-slate-600 hover:text-slate-800'
-          }`}
+          className={`mode-tab ${mode === 'manual' ? 'active' : ''}`}
         >
           <Keyboard className="w-4 h-4" />
           Manual Purchase
@@ -24,11 +30,7 @@ export default function NewPurchase() {
         <button
           type="button"
           onClick={() => setMode('document')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
-            mode === 'document'
-              ? 'bg-white text-primary-600 shadow-sm'
-              : 'text-slate-600 hover:text-slate-800'
-          }`}
+          className={`mode-tab ${mode === 'document' ? 'active' : ''}`}
         >
           <FileUp className="w-4 h-4" />
           Upload Purchase Document

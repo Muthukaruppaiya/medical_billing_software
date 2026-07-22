@@ -20,6 +20,7 @@ export default function Suppliers() {
       (supplier.phone || '').includes(normalizedQuery) ||
       (supplier.gstin || '').toLowerCase().includes(normalizedQuery) ||
       (supplier.pan || '').toLowerCase().includes(normalizedQuery) ||
+      (supplier.drugLicense || '').toLowerCase().includes(normalizedQuery) ||
       (supplier.address || '').toLowerCase().includes(normalizedQuery)
     );
   }, [state.suppliers, query]);
@@ -97,7 +98,7 @@ export default function Suppliers() {
           type="text"
           value={query}
           onChange={event => setQuery(event.target.value)}
-          placeholder="Search by name, phone, GSTIN, PAN..."
+          placeholder="Search by name, phone, GSTIN, PAN, DL..."
           className="form-input pl-9"
         />
       </div>
@@ -161,6 +162,11 @@ export default function Suppliers() {
                   </div>
                   {supplier.pan && (
                     <p className="text-xs text-slate-500 font-mono">PAN: {supplier.pan}</p>
+                  )}
+                  {supplier.drugLicense && (
+                    <p className="text-xs text-slate-500">
+                      <span className="font-semibold text-slate-600">DL:</span> {supplier.drugLicense}
+                    </p>
                   )}
                   {supplier.address && (
                     <div className="flex items-start gap-2">
